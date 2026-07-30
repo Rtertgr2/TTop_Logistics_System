@@ -22,3 +22,6 @@ npm run dev
 ## API Endpoints
 - `POST /upload` - อัปโหลดไฟล์ PDF
 - `POST /plan-routes` - คำนวณเส้นทาง
+
+## TEST URL
+- https://adventures-proceeds-modular-hello.trycloudflare.com
