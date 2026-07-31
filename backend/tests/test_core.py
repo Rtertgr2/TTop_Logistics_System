@@ -176,3 +176,21 @@ class TestPOReferenceExtraction:
         from services.pdf_extractor import _extract_po_reference
         text = "ลูกค้า A ที่อยู่ 123"
         assert _extract_po_reference(text) is None
+
+
+class TestRouteRebalance:
+    def test_balanced_distribution(self):
+        orders = [
+            {"id": i, "customer": f"C{i}", "address": f"addr {i}", "weight": 1, "lat": 13.7 + i * 0.01, "lng": 100.4 + i * 0.01}
+            for i in range(20)
+        ]
+        vehicles = [
+            {"id": 1, "name": "V1", "plate": "1", "capacity": 3750, "driver": "A", "active": True},
+            {"id": 2, "name": "V2", "plate": "2", "capacity": 3750, "driver": "B", "active": True},
+        ]
+        routes = optimize_routes(orders, vehicles=vehicles)
+        assert len(routes) == 2
+        stops_per = [len(r["stops"]) for r in routes]
+        assert sum(stops_per) == 20
+        # ทั้ง 2 คันต้องมีจุดส่ง >= 5 (ไม่ใช่ 1 vs 19)
+        assert min(stops_per) >= 5

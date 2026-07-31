@@ -323,9 +323,10 @@ def optimize_routes(
 
     ขั้นตอน:
     1. สร้าง distance matrix (depot = index 0)
-    2. เรียก OR-Tools solver พร้อม capacity constraints
-    3. ถ้าล้มเหลว fallback เป็น Sweep + Nearest Neighbor
-    4. คืนค่า list of route dicts
+    2. เรียก OR-Tools solver พร้อม capacity constraints (ใช้ stop count เป็น demand)
+    3. ตรวจสอบ balance — ถ้ารถคันไหนได้น้อยเกินไป ย้ายมา balanced
+    4. ถ้าล้มเหลว fallback เป็น Sweep + Nearest Neighbor
+    5. คืนค่า list of route dicts
     """
     if not orders:
         return []
@@ -360,12 +361,24 @@ def optimize_routes(
     # แปลงเป็น int (เมตร) สำหรับ OR-Tools
     dm_int = _distance_matrix_to_int_km(distance_matrix)
 
-    # เตรียม capacity data
-    vehicle_capacities = [int(float(v.get("capacity", 3750))) for v in vehicles]
-    order_demands = [1] + [int(float(o.get("weight", 1))) for o in orders]  # depot = 0
+    # ── Demand = จำนวน stop (ไม่ใช่น้ำหนัก) ──
+    # เพราะน้ำหนัก orders อาจเบาเกินไป (1 kg/จุด) ทำให้รถคันเดียวจุหมด
+    # ใช้ max_stops ต่อรถเป็น capacity ถ้ามี, ไม่งั้นใช้ ceil(total/vehicles) + buffer
+    avg_stops = math.ceil(len(orders) / num_vehicles) if num_vehicles > 0 else len(orders)
+    vehicle_capacities = []
+    for v in vehicles:
+        max_stops = v.get("max_stops", 0)
+        if max_stops and max_stops > 0:
+            vehicle_capacities.append(int(max_stops))
+        else:
+            # ใช้ 1.5x ของค่าเฉลี่ย เพื่อให้มีพื้นที่เหลือ
+            vehicle_capacities.append(int(avg_stops * 1.5) + 1)
+
+    # demand แต่ละจุด = 1 stop
+    order_demands = [1] + [1] * len(orders)  # depot = 0
 
     # แก้ปัญหา VRP
-    logger.info(f"กำลังแก้ปัญหา VRP: {len(orders)} orders, {num_vehicles} vehicles (timeout={SOLVE_TIMEOUT_SECONDS}s)")
+    logger.info(f"กำลังแก้ปัญหา VRP: {len(orders)} orders, {num_vehicles} vehicles, avg_stops={avg_stops} (timeout={SOLVE_TIMEOUT_SECONDS}s)")
 
     result = _solve_vrp(
         distance_matrix_int=dm_int,
@@ -379,6 +392,9 @@ def optimize_routes(
         routes = _extract_routes(result, orders, vehicles)
         total_stops = sum(len(r["stops"]) for r in routes)
         logger.info(f"OR-Tools VRP สำเร็จ: {len(routes)} routes, {total_stops} stops")
+
+        # ── Post-processing: Balance routes ──
+        routes = _rebalance_routes(routes, orders, vehicles, depot_lat, depot_lng)
         return routes
 
     # Fallback
@@ -386,4 +402,98 @@ def optimize_routes(
     routes = _fallback_sweep(orders, vehicles, depot_lat, depot_lng)
     total_stops = sum(len(r["stops"]) for r in routes)
     logger.info(f"Fallback: {len(routes)} routes, {total_stops} stops")
+    return routes
+
+
+def _rebalance_routes(
+    routes: list[dict],
+    orders: list[dict],
+    vehicles: list[dict],
+    depot_lat: float,
+    depot_lng: float,
+) -> list[dict]:
+    """ตรวจสอบความสมดุลของ routes — ถ้ารถคันไหนได้น้อยกว่า 30% ของค่าเฉลี่ย ย้าย stop มา balanced"""
+    if not routes or len(routes) <= 1:
+        return routes
+
+    total_stops = sum(len(r["stops"]) for r in routes)
+    if total_stops == 0:
+        return routes
+
+    avg = total_stops / len(routes)
+    min_acceptable = max(1, avg * 0.3)
+
+    # 辆车ที่ไม่มี stop เลย ต้องเพิ่มเข้าไปใน underloaded
+    active_route_ids = {r["vehicle_id"] for r in routes}
+    for v in vehicles:
+        if v.get("active", True) and v.get("id") not in active_route_ids:
+            empty_route = {
+                "vehicle_id": v.get("id"),
+                "plate": v.get("plate", ""),
+                "driver": v.get("driver", ""),
+                "name": v.get("name", f"รถคันที่ {v.get('id')}"),
+                "capacity": float(v.get("capacity", 3750)),
+                "stops": [],
+                "total_weight": 0,
+                "total_distance_km": 0,
+                "google_maps_link": "",
+            }
+            routes.append(empty_route)
+
+    # 重新คำนวณ
+    total_stops = sum(len(r["stops"]) for r in routes)
+    avg = total_stops / len(routes)
+    min_acceptable = max(1, avg * 0.3)
+
+    underloaded = [r for r in routes if len(r["stops"]) < min_acceptable]
+    overloaded = [r for r in routes if len(r["stops"]) > avg * 1.2]
+
+    if not underloaded:
+        return routes
+
+    logger.info(f"Rebalancing: {len(underloaded)} underloaded vehicles (avg={avg:.1f}, min={min_acceptable:.1f})")
+
+    for under in underloaded:
+        if not overloaded:
+            overloaded = [r for r in routes if r is not under and len(r["stops"]) > 1]
+            if not overloaded:
+                break
+
+        # หา stop ที่ใกล้ vehicle under ที่สุด จาก overloaded vehicle
+        best_stop = None
+        best_source = None
+        best_dist = float("inf")
+
+        for over in overloaded:
+            if len(over["stops"]) <= 1:
+                continue
+            for stop in over["stops"]:
+                s_lat = stop.get("lat", depot_lat)
+                s_lng = stop.get("lng", depot_lng)
+                if under["stops"]:
+                    ref_lat = under["stops"][0].get("lat", depot_lat)
+                    ref_lng = under["stops"][0].get("lng", depot_lng)
+                else:
+                    ref_lat = depot_lat
+                    ref_lng = depot_lng
+                dist = _haversine_km(ref_lat, ref_lng, s_lat, s_lng)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_stop = stop
+                    best_source = over
+
+        if best_stop and best_source:
+            best_source["stops"].remove(best_stop)
+            under["stops"].append(best_stop)
+            under["total_weight"] = round(sum(s.get("weight", 0) for s in under["stops"]), 2)
+            best_source["total_weight"] = round(sum(s.get("weight", 0) for s in best_source["stops"]), 2)
+
+            under["google_maps_link"] = generate_google_maps_link(under["stops"], None)
+            best_source["google_maps_link"] = generate_google_maps_link(best_source["stops"], None)
+
+            logger.info(f"Moved stop '{best_stop.get('customer', '')[:20]}' from vehicle {best_source['vehicle_id']} -> {under['vehicle_id']}")
+
+    # ลบ routes ที่ไม่มี stop ออก
+    routes = [r for r in routes if len(r["stops"]) > 0]
+
     return routes
