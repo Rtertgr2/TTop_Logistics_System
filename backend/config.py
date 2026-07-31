@@ -24,5 +24,11 @@ EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 # File upload
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
 
+# Backup
+BACKUP_DIR = os.path.join(os.path.dirname(__file__), "data", "op_backups")
+
+# PDF Templates (1.1.11)
+TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "data", "templates")
+
 # CORS
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")

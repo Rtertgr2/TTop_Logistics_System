@@ -107,6 +107,9 @@ def init_db():
             plate TEXT NOT NULL,
             driver TEXT,
             capacity REAL DEFAULT 5000,
+            max_volume_cbm REAL DEFAULT 0,
+            max_boxes INTEGER DEFAULT 0,
+            max_stops INTEGER DEFAULT 0,
             active INTEGER DEFAULT 1
         )
     """)
@@ -115,6 +118,27 @@ def init_db():
         cursor.execute("ALTER TABLE vehicles ADD COLUMN name TEXT")
     if "active" not in existing_veh_cols:
         cursor.execute("ALTER TABLE vehicles ADD COLUMN active INTEGER DEFAULT 1")
+    if "max_volume_cbm" not in existing_veh_cols:
+        cursor.execute("ALTER TABLE vehicles ADD COLUMN max_volume_cbm REAL DEFAULT 0")
+    if "max_boxes" not in existing_veh_cols:
+        cursor.execute("ALTER TABLE vehicles ADD COLUMN max_boxes INTEGER DEFAULT 0")
+    if "max_stops" not in existing_veh_cols:
+        cursor.execute("ALTER TABLE vehicles ADD COLUMN max_stops INTEGER DEFAULT 0")
+
+    # ตารางรายการสินค้าในออเดอร์ (Order Items) — 1.3.2
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            product_code TEXT,
+            product_name TEXT,
+            quantity REAL DEFAULT 0,
+            unit TEXT DEFAULT 'ชิ้น',
+            price REAL DEFAULT 0,
+            total REAL DEFAULT 0,
+            FOREIGN KEY (order_id) REFERENCES orders (id) ON DELETE CASCADE
+        )
+    """)
 
     # ตารางจดจำพิกัดลูกค้าที่เคยยืนยันแล้ว (Persistent Customer Location Memory)
     cursor.execute("""
@@ -137,6 +161,7 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_route_details_plan_id ON route_details(plan_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_vehicles_active ON vehicles(active);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_customer_locations_key ON customer_locations(customer_key);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);")
 
     conn.commit()
     conn.close()
@@ -276,6 +301,23 @@ def save_orders(orders: list[dict]) -> list[int]:
         new_id = cursor.lastrowid
         order["id"] = new_id
         saved_ids.append(new_id)
+
+        # บันทึกรายการสินค้าลง order_items (1.3.2)
+        products = order.get("products", [])
+        if products:
+            for p in products:
+                cursor.execute("""
+                    INSERT INTO order_items (order_id, product_code, product_name, quantity, unit, price, total)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    new_id,
+                    p.get("code", ""),
+                    p.get("name", ""),
+                    p.get("quantity", 0),
+                    p.get("unit", "ชิ้น"),
+                    p.get("price", 0),
+                    p.get("total", 0),
+                ))
 
     conn.commit()
     conn.close()

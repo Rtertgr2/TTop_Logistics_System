@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 import hashlib
 import json
 import urllib.parse
@@ -40,6 +41,36 @@ THAILAND_BOUNDS = {
     "min_lng": 97.0,
     "max_lng": 106.0
 }
+
+
+def _request_with_retry(url: str, max_retries: int = 3, base_delay: float = 1.0, timeout: float = 3.0) -> requests.Response | None:
+    """HTTP GET with exponential backoff retry (1.2.8)"""
+    for attempt in range(max_retries):
+        try:
+            res = requests.get(url, timeout=timeout)
+            if res.status_code == 429:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(f"Rate limit hit (429), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                continue
+            if res.status_code == 200:
+                return res
+            logger.warning(f"HTTP {res.status_code} for {url[:80]}")
+            return res
+        except requests.exceptions.Timeout:
+            delay = base_delay * (2 ** attempt)
+            logger.warning(f"Timeout on attempt {attempt + 1}/{max_retries}, retrying in {delay}s")
+            time.sleep(delay)
+        except requests.exceptions.ConnectionError as e:
+            delay = base_delay * (2 ** attempt)
+            logger.warning(f"Connection error on attempt {attempt + 1}/{max_retries}: {e}")
+            time.sleep(delay)
+        except Exception as e:
+            logger.error(f"Request error: {e}")
+            return None
+
+    logger.error(f"All {max_retries} retries exhausted for {url[:80]}")
+    return None
 
 
 def is_in_thailand(lat: float, lng: float) -> bool:
@@ -87,8 +118,8 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
     if google_key and not google_key.startswith("YOUR_"):
         try:
             places_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={urllib.parse.quote(clean)}&key={google_key}&language=th&region=th"
-            res = requests.get(places_url, timeout=3.0)
-            if res.status_code == 200:
+            res = _request_with_retry(places_url)
+            if res and res.status_code == 200:
                 data = res.json()
                 if data.get("status") == "OK" and data.get("results"):
                     first = data["results"][0]
@@ -110,8 +141,8 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
     if google_key and not google_key.startswith("YOUR_"):
         try:
             url = f"https://maps.googleapis.com/maps/api/geocode/json?address={urllib.parse.quote(clean)}&key={google_key}&components=country:TH"
-            res = requests.get(url, timeout=3.0)
-            if res.status_code == 200:
+            res = _request_with_retry(url)
+            if res and res.status_code == 200:
                 data = res.json()
                 if data.get("status") == "OK" and data.get("results"):
                     first = data["results"][0]
@@ -145,8 +176,8 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
     try:
         query_str = clean + ' Thailand'
         url = f'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine={urllib.parse.quote(query_str)}&outFields=Match_addr,Score&maxLocations=1&countryCode=THA'
-        res = requests.get(url, timeout=3.0)
-        if res.status_code == 200:
+        res = _request_with_retry(url)
+        if res and res.status_code == 200:
             data = res.json()
             candidates = data.get('candidates', [])
             if candidates:
@@ -171,8 +202,8 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
     try:
         url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(clean)}&countrycodes=th&limit=1"
         headers = {'User-Agent': 'LogisticsRoutePlanner/1.0'}
-        res = requests.get(url, headers=headers, timeout=3.0)
-        if res.status_code == 200:
+        res = _request_with_retry(url)
+        if res and res.status_code == 200:
             data = res.json()
             if data:
                 lat = round(float(data[0]["lat"]), 6)

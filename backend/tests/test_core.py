@@ -133,3 +133,46 @@ class TestRouteOptimizer:
         assert stop["customer"] == "A"
         assert stop["order_number"] == "SO001"
         assert stop["zone"] == "กรุงเทพ"
+
+
+class TestThaiDateConversion:
+    def test_buddhist_to_christian(self):
+        from services.pdf_extractor import _convert_thai_date
+        assert _convert_thai_date("01/07/2569") == "2026-07-01"
+
+    def test_buddhist_with_thai_text(self):
+        from services.pdf_extractor import _convert_thai_date
+        assert _convert_thai_date("15 ส.ค. 2569") == "2026-08-15"
+
+    def test_christian_date_unchanged(self):
+        from services.pdf_extractor import _convert_thai_date
+        assert _convert_thai_date("01/07/2026") == "2026-07-01"
+
+    def test_invalid_date_returns_none(self):
+        from services.pdf_extractor import _convert_thai_date
+        assert _convert_thai_date("ไม่ใช่วันที่") is None
+
+    def test_empty_string(self):
+        from services.pdf_extractor import _convert_thai_date
+        assert _convert_thai_date("") is None
+
+    def test_none_input(self):
+        from services.pdf_extractor import _convert_thai_date
+        assert _convert_thai_date(None) is None
+
+
+class TestPOReferenceExtraction:
+    def test_po_reference(self):
+        from services.pdf_extractor import _extract_po_reference
+        text = "PO Ref: 295/14715\nลูกค้า: A"
+        assert _extract_po_reference(text) == "295/14715"
+
+    def test_po_ref_no_label(self):
+        from services.pdf_extractor import _extract_po_reference
+        text = "Purchase Order: ABC-123/456"
+        assert _extract_po_reference(text) == "ABC-123/456"
+
+    def test_no_po_reference(self):
+        from services.pdf_extractor import _extract_po_reference
+        text = "ลูกค้า A ที่อยู่ 123"
+        assert _extract_po_reference(text) is None

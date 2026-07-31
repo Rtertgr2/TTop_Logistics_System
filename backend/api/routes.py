@@ -202,6 +202,14 @@ async def remove_customer_location(loc_id: int):
     return {"status": "success", "message": "ลบรายการความจำเรียบร้อยแล้ว"}
 
 
+@router.get("/orders/low-confidence")
+async def get_low_confidence_orders(threshold: float = 70.0):
+    """ดึงออเดอร์ที่ Confidence Score ต่ำกว่า threshold (ค่าเริ่มต้น 70%) — 1.2.6"""
+    all_orders = get_all_orders(limit=500)
+    low_conf = [o for o in all_orders if (o.get("confidence_score") or 0) < threshold]
+    return {"orders": low_conf, "total": len(low_conf), "threshold": threshold}
+
+
 @router.post("/send-email")
 async def send_email(request: SendEmailRequest):
     """ส่งแผนเส้นทางทาง email"""

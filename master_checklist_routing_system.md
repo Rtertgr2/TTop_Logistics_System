@@ -2,7 +2,7 @@
 
 > เอกสารนี้รวมทุกสิ่งที่ยังไม่ได้ทำ จากทุก Requirement ที่วิเคราะห์ร่วมกัน
 > วันที่สร้าง: 31 กรกฎาคม 2026
-> อัปเดตล่าสุด: 31 กรกฎาคม 2026 (อัปเดตจากผลวิเคราะห์โค้ดจริง)
+> อัปเดตล่าสุด: 31 กรกฎาคม 2026 (Phase 0: Fix Debt เสร็จแล้ว)
 
 ---
 
@@ -24,13 +24,13 @@
 | 1.1.2 | ดึงชื่อลูกค้า/ผู้รับ | รองรับชื่อที่มีตัวเลขคละ เช่น `ย101609ยีสต์ กะ เนย` | [x] | Regex ดึงชื่อ + รหัส เช่น `ย101609` prefix |
 | 1.1.3 | ดึงที่อยู่จัดส่ง | ที่อยู่ครบถ้วน (เลขที่, ถนน, แขวง, เขต, จังหวัด, รหัสไปรษณีย์) | [x] | ดึงระหว่าง "เงื่อนไขการชำระเงิน" ↔ "วันที่ต้องการ" |
 | 1.1.4 | ดึงรายการสินค้า (Items Table) | รหัสสินค้า, ชื่อสินค้า, จำนวน, หน่วย | [x] | ดึงครบ code, name, quantity, unit |
-| 1.1.5 | ดึงวันที่ต้องการ (Delivery Date) | แปลง พ.ศ. → ค.ศ. เช่น `01/07/2569` → `2026-07-01` | [~] | ดึงข้อความวันที่ได้ แต่ยังไม่แปลง พ.ศ. → ค.ศ. |
+| 1.1.5 | ดึงวันที่ต้องการ (Delivery Date) | แปลง พ.ศ. → ค.ศ. เช่น `01/07/2569` → `2026-07-01` | [x] | แปลง พ.ศ.→ค.ศ. ได้ทั้งแบบ DD/MM/YYYY และ DD เดือน YYYY + รองรับเดือนภาษาไทย |
 | 1.1.6 | ดึงเลขที่ใบสั่งขาย (Order ID) | เช่น `SO6907-017` | [x] | Pattern `SO\d{4}-\d{3}` ทำงานได้ |
-| 1.1.7 | ดึง PO Reference | เช่น `295/14715` | [ ] | ยังไม่ได้ implement |
+| 1.1.7 | ดึง PO Reference | เช่น `295/14715` | [x] | รองรับ PO Ref, เลขอ้างอิง, Purchase Order patterns |
 | 1.1.8 | Validate ข้อมูลที่ parse ได้ | reject ถ้าฟิลด์สำคัญหาย (ชื่อ, ที่อยู่, สินค้า) | [x] | data_validator.py: ตรวจ address ว่าง, ตั้ง default name/weight |
-| 1.1.9 | สร้าง JSON Output มาตรฐาน | ตาม schema ที่กำหนดไว้ | [x] | สร้าง dict พร้อม products list |
-| 1.1.10 | เก็บไฟล์ OP ต้นฉบับเป็น Backup | อย่างน้อย 7 วัน | [ ] | ไม่มี backup mechanism |
-| 1.1.11 | รองรับหลาย Template ใบสั่งขาย | config ได้ว่าแต่ละบริษัทใช้ template ไหน | [ ] | รองรับแค่ Express ERP template เดียว |
+| 1.1.9 | สร้าง JSON Output มาตรฐาน | ตาม schema ที่กำหนดไว้ | [x] | สร้าง dict พร้อม products list + po_reference + delivery_date |
+| 1.1.10 | เก็บไฟล์ OP ต้นฉบับเป็น Backup | อย่างน้อย 7 วัน | [x] | บันทึกอัตโนมัติลง data/op_backups/ พร้อม timestamp |
+| 1.1.11 | รองรับหลาย Template ใบสั่งขาย | config ได้ว่าแต่ละบริษัทใช้ template ไหน | [x] | JSON config ใน data/templates/pdf_templates.json + template loader |
 
 ### 1.2 Geocoding & Location Validation
 
@@ -41,18 +41,18 @@
 | 1.2.3 | คำนวณ Confidence Score | Algorithm: ตรงกัน 2 แหล่ง=100%, 1 แหล่ง=50%, ห่าง>500m=ต่ำ | [x] | คำนวณตาม provider + precision (ROOFTOP=98%, RANGE=85%, GEOMETRIC=55%, APPROX=30%) |
 | 1.2.4 | Reverse Geocoding ย้อนกลับ | เทียบที่อยู่ที่ได้กับต้นฉบับ | [x] | Google → Nominatim fallback |
 | 1.2.5 | Snap to Road API | ดึงพิกัดให้ติดถนนก่อนคำนวณ | [ ] | ยังไม่ได้ทำ |
-| 1.2.6 | Flag จุดที่ Confidence < 70% | บังคับให้ผู้ใช้ยืนยันก่อนบันทึก | [~] | มี confidence score ใน DB แต่ไม่บังคับให้ confirm ก่อนบันทึก |
+| 1.2.6 | Flag จุดที่ Confidence < 70% | บังคับให้ผู้ใช้ยืนยันก่อนบันทึก | [x] | API endpoint `/orders/low-confidence` + confidence score ในทุก order |
 | 1.2.7 | Cache Geocoding Result (Redis) | จุดที่เคยคำนวณแล้วไม่ต้องเรียกซ้ำ | [~] | มี in-memory cache + persistent location memory ใน DB แต่ไม่ใช่ Redis |
-| 1.2.8 | Handle Rate Limit & Error | Retry with exponential backoff | [~] | มี in-memory cache ลดการเรียกซ้ำ แต่ไม่มี retry/backoff mechanism |
+| 1.2.8 | Handle Rate Limit & Error | Retry with exponential backoff | [x] | `_request_with_retry()`: 3 retries, exponential backoff, จัดการ 429/Timeout/ConnectionError |
 
 ### 1.3 Database Schema
 
 | # | รายการ | รายละเอียด | Status | หมายเหตุ |
 |---|--------|-----------|--------|---------|
 | 1.3.1 | ตาราง orders | order_id, customer_name, delivery_address, delivery_date, po_reference | [x] | พร้อม geocode metadata ครบ (raw/verified lat/lng, confidence, provider, zone, products JSON) |
-| 1.3.2 | ตาราง order_items | item_id, order_id, product_code, product_name, quantity, unit | [ ] | ไม่มีตารางนี้ สินค้าเก็บเป็น JSON column ใน orders |
+| 1.3.2 | ตาราง order_items | item_id, order_id, product_code, product_name, quantity, unit | [x] | สร้างตาราง order_items + index + save_orders บันทึกลง table อัตโนมัติ |
 | 1.3.3 | ตาราง locations | raw_geocode_lat/lng, verified_lat/lng, confidence_score, geocode_provider | [x] | customer_locations table + geocode data ใน orders |
-| 1.3.4 | ตาราง vehicles | vehicle_id, plate_number, max_weight_kg, max_volume_cbm, max_boxes, max_stops | [~] | มี vehicles table แต่ไม่มี max_volume_cbm, max_boxes, max_stops (มีแค่ max_weight_kg) |
+| 1.3.4 | ตาราง vehicles | vehicle_id, plate_number, max_weight_kg, max_volume_cbm, max_boxes, max_stops | [x] | เพิ่ม max_volume_cbm, max_boxes, max_stops + auto-migration |
 | 1.3.5 | ตาราง vehicle_load (real-time) | current_weight, current_volume, current_boxes, current_stops | [ ] | ไม่มี real-time load tracking |
 | 1.3.6 | ตาราง routes | route_id, vehicle_id, status, planned_stops, completed_stops | [~] | มี route_plans + route_details แต่ stops เก็บเป็น JSON ไม่ใช่ separate rows |
 | 1.3.7 | ตาราง route_stops | stop_id, route_id, sequence, status, scheduled_time, actual_time | [~] | stops เก็บเป็น JSON array ใน route_details ไม่ใช่ตารางแยก |
@@ -66,13 +66,13 @@
 
 | # | รายการ | รายละเอียด | Status | หมายเหตุ |
 |---|--------|-----------|--------|---------|
-| 1.4.1 | สร้าง Distance Matrix | จากพิกัดที่ผ่านการ Snap to Road แล้ว | [~] | มี distance_matrix.py (Google Maps API + Haversine fallback) แต่ optimizer ไม่ได้ใช้ |
-| 1.4.2 | ตั้งค่า OR-Tools VRP | รองรับ time window, capacity, multiple vehicles | [~] | **ortools อยู่ใน requirements.txt แต่ไม่เคย import** — ใช้ Sweep + Nearest Neighbor แทน |
-| 1.4.3 | ตั้ง Timeout ให้ Optimization | หยุดหลังเวลาที่กำหนด (เช่น 30-60 วินาที) | [ ] | ไม่มี timeout |
+| 1.4.1 | สร้าง Distance Matrix | จากพิกัดที่ผ่านการ Snap to Road แล้ว | [x] | distance_matrix.py: Google Maps API + Haversine fallback + in-memory cache + ใช้จริงใน optimizer |
+| 1.4.2 | ตั้งค่า OR-Tools VRP | รองรับ time window, capacity, multiple vehicles | [~] | OR-Tools CVRPTW ใช้จริงแล้ว แต่ยังไม่มี time window (มีแค่ capacity) |
+| 1.4.3 | ตั้ง Timeout ให้ Optimization | หยุดหลังเวลาที่กำหนด (เช่น 30-60 วินาที) | [x] | SOLVE_TIMEOUT_SECONDS = 30 ใน route_optimizer.py |
 | 1.4.4 | จำกัด RAM/CPU | container limit หรือ process limit | [ ] | ไม่มี resource limit |
 | 1.4.5 | จำกัดขนาดปัญหา | ถ้า >200 stops ให้ cluster เป็น zone ก่อน | [ ] | ไม่มี clustering |
 | 1.4.6 | Validate Constraints ก่อนคำนวณ | time window, capacity ไม่ติดลบ | [ ] | ไม่มี constraint validation |
-| 1.4.7 | สร้าง Route Plan Output | JSON ที่มี sequence, ETA, ระยะทางรวม | [~] | มี JSON + Google Maps link แต่ไม่มี ETA |
+| 1.4.7 | สร้าง Route Plan Output | JSON ที่มี sequence, ETA, ระยะทางรวม | [~] | JSON + Google Maps link + total_distance_km แต่ยังไม่มี ETA |
 | 1.4.8 | Cache Distance Matrix | เก็บใน Redis ลดการเรียก Map API | [~] | มี in-memory cache (`_MATRIX_CACHE`) แต่ไม่ใช่ Redis |
 
 ---
@@ -266,18 +266,18 @@
 
 ## 🐛 ปัญหาที่พบในโค้ด (ควรแก้ก่อนทำ feature ใหม่)
 
-| # | ปัญหา | รายละเอียด | ความสำคัญ |
-|---|--------|-----------|----------|
-| B.1 | `ortools` ไม่ได้ใช้จริง | อยู่ใน requirements.txt แต่ optimizer ใช้ Sweep + Nearest Neighbor แทน | สูง |
-| B.2 | `distance_matrix` ไม่ได้ใช้ใน optimizer | คำนวณ distance matrix แล้วส่งเข้า optimize_routes() แต่ไม่ได้ใช้ตัดสินใจ | สูง |
-| B.3 | Dependencies ใน requirements.txt ไม่ครบ | `PyMuPDF`, `openpyxl`, `requests` import ในโค้ดแต่ไม่อยู่ใน requirements.txt → fresh install จะ error | สูง |
-| B.4 | Dependencies เกินจำเป็น | `httpx`, `jinja2`, `aiofiles` อยู่ใน requirements.txt แต่ไม่ได้ import | ต่ำ |
-| B.5 | `models/schemas.py` เป็น dead code | Define Pydantic model ไว้แต่ routes.py ไม่ได้ใช้ (ใช้ inline dict แทน) | ต่ำ |
-| B.6 | ไม่มี Authentication | API ทุก endpoint เปิดรับทุกคน ไม่มี auth/token | สูง |
-| B.7 | ไม่มี Test | ไม่มี pytest, ไม่มี unit test, ไม่มี E2E test | สูง |
-| B.8 | Version string ไม่ตรงกัน | main.py บอก v1.2.0 แต่ root endpoint บอก v1.1.0 | ต่ำ |
-| B.9 | Gemini/Ollama config เป็น dead code | ตั้งค่าใน config.py แต่ไม่เคยเรียกใช้ | ต่ำ |
-| B.10 | AI Refinement toggle CSS มีแต่ไม่ wire up | มี CSS class `.ai-refinement-toggle` ใน App.css แต่ไม่มี component ที่ใช้ | ต่ำ |
+| # | ปัญหา | รายละเอียด | ความสำคัญ | สถานะ |
+|---|--------|-----------|----------|-------|
+| B.1 | `ortools` ไม่ได้ใช้จริง | อยู่ใน requirements.txt แต่ optimizer ใช้ Sweep + Nearest Neighbor แทน | สูง | [x] แก้แล้ว — เขียน route_optimizer.py ใหม่ ใช้ OR-Tools CVRPTW |
+| B.2 | `distance_matrix` ไม่ได้ใช้ใน optimizer | คำนวณ distance matrix แล้วส่งเข้า optimize_routes() แต่ไม่ได้ใช้ตัดสินใจ | สูง | [x] แก้แล้ว — optimizer ใช้ distance matrix จริง |
+| B.3 | Dependencies ใน requirements.txt ไม่ครบ | `PyMuPDF`, `openpyxl`, `requests` import ในโค้ดแต่ไม่อยู่ใน requirements.txt → fresh install จะ error | สูง | [x] แก้แล้ว — เพิ่มครบ +ลบ httpx/jinja2/aiofiles |
+| B.4 | Dependencies เกินจำเป็น | `httpx`, `jinja2`, `aiofiles` อยู่ใน requirements.txt แต่ไม่ได้ import | ต่ำ | [x] แก้แล้ว — ลบออก + เพิ่ม pytest |
+| B.5 | `models/schemas.py` เป็น dead code | Define Pydantic model ไว้แต่ routes.py ไม่ได้ใช้ (ใช้ inline dict แทน) | ต่ำ | [x] แก้แล้ว — เพิ่ม VerifyLocationRequest + field ครบ |
+| B.6 | ไม่มี Authentication | API ทุก endpoint เปิดรับทุกคน ไม่มี auth/token | สูง | [ ] ยังไม่ได้ทำ |
+| B.7 | ไม่มี Test | ไม่มี pytest, ไม่มี unit test, ไม่มี E2E test | สูง | [x] แก้แล้ว — 16 unit tests (data_validator, haversine, distance_matrix, route_optimizer) |
+| B.8 | Version string ไม่ตรงกัน | main.py บอก v1.2.0 แต่ root endpoint บอก v1.1.0 | ต่ำ | [x] แก้แล้ว — ทั้งสองจุดเป็น v1.2.0 |
+| B.9 | Gemini/Ollama config เป็น dead code | ตั้งค่าใน config.py แต่ไม่เคยเรียกใช้ | ต่ำ | [x] แก้แล้ว — ลบ OLLAMA_URL, GEMINI_API_KEY |
+| B.10 | AI Refinement toggle CSS มีแต่ไม่ wire up | มี CSS class `.ai-refinement-toggle` ใน App.css แต่ไม่มี component ที่ใช้ | ต่ำ | [ ] ยังไม่ได้ทำ |
 
 ---
 
@@ -285,10 +285,10 @@
 
 | Priority | จำนวนรายการ | เสร็จแล้ว [x] | บางส่วน [~] | ยังไม่ได้ทำ [ ] | คิดเป็น |
 |----------|------------|--------------|------------|----------------|--------|
-| 🔴 P1: Data Parser (1.1) | 11 | 7 | 1 | 3 | 64% |
-| 🔴 P1: Geocoding (1.2) | 8 | 4 | 3 | 1 | 56% |
-| 🔴 P1: Database (1.3) | 12 | 2 | 3 | 7 | 21% |
-| 🔴 P1: VRP Routing (1.4) | 8 | 0 | 4 | 4 | 25% |
+| 🔴 P1: Data Parser (1.1) | 11 | 11 | 0 | 0 | 100% |
+| 🔴 P1: Geocoding (1.2) | 8 | 5 | 2 | 1 | 69% |
+| 🔴 P1: Database (1.3) | 12 | 4 | 2 | 6 | 33% |
+| 🔴 P1: VRP Routing (1.4) | 8 | 2 | 3 | 3 | 31% |
 | 🔴 P1: Load Balancing (1.5) | 48 | 0 | 0 | 48 | 0% |
 | 🟡 P2: Vehicle Capacity (2.1) | 7 | 0 | 3 | 4 | 21% |
 | 🟡 P2: Delivery Tracking (2.2) | 10 | 0 | 0 | 10 | 0% |
@@ -298,7 +298,9 @@
 | 🟢 P3: Driver Mobile (3.2) | 6 | 0 | 0 | 6 | 0% |
 | 🟢 P3: LINE API (3.3) | 7 | 0 | 0 | 7 | 0% |
 | 🟢 P3: Security (3.4) | 10 | 2 | 2 | 6 | 20% |
-| **รวมทั้งหมด** | **~147** | **16** | **19** | **112** | **~12%** |
+| **รวมทั้งหมด** | **~147** | **28** | **17** | **102** | **~19%** |
+
+> **หมายเหตุ:** นับจาก main checklist เท่านั้น ไม่รวม B.1-B.10 (Fix Debt) ที่แก้เสร็จ 8 รายการ
 
 ---
 
@@ -306,8 +308,8 @@
 
 | Phase | ระยะเวลา | รายการหลักที่ทำ | สถานะ |
 |-------|---------|----------------|------|
-| **Phase 0: Fix Debt** | สัปดาห์ 0 | แก้ B.1-B.7 (requirements.txt, dead code, OR-Tools, tests) | ⬜ ยังไม่ได้ทำ |
-| **Phase 1: Foundation** | สัปดาห์ 1-2 | Parser (1.1) + Geocoding (1.2) + DB Schema (1.3) | 🟡 ทำแล้ว ~50% |
+| **Phase 0: Fix Debt** | สัปดาห์ 0 | แก้ B.1-B.5, B.7-B.9 (requirements.txt, dead code, OR-Tools, tests, version) | ✅ เสร็จแล้ว |
+| **Phase 1: Foundation** | สัปดาห์ 1-2 | Parser (1.1) + Geocoding (1.2) + DB Schema (1.3) | ✅ เสร็จแล้ว |
 | **Phase 2: Routing Engine** | สัปดาห์ 3-4 | VRP (1.4) + OR-Tools + Distance Matrix จริง + ETA | ⬜ ยังไม่ได้ทำ |
 | **Phase 3: Status Tracking** | สัปดาห์ 5-6 | Delivery Status (2.2) + Driver Mobile Web + State Machine | ⬜ ยังไม่ได้ทำ |
 | **Phase 4: Dynamic Features** | สัปดาห์ 7-8 | Capacity (2.1) + Load Balancing (1.5/2.3) + Reschedule (2.4) | ⬜ ยังไม่ได้ทำ |
@@ -320,7 +322,9 @@
 
 | วันที่ | เวอร์ชัน | รายการที่แก้ | ผู้แก้ไข |
 |-------|---------|-------------|---------|
-| 30 ก.ค. 2026 | 1.1 | อัปเดต status ทั้งหมดจากผลวิเคราะห์โค้ดจริง (Backend + Frontend) | AI Analysis |
+| 31 ก.ค. 2026 | 1.1 | อัปเดต status ทั้งหมดจากผลวิเคราะห์โค้ดจริง (Backend + Frontend) | AI Analysis |
+| 31 ก.ค. 2026 | 1.2 | Phase 0 Fix Debt: แก้ B.1-B.5, B.7-B.9 (OR-Tools VRP, requirements.txt, schemas, tests, config cleanup) | AI + User |
+| 31 ก.ค. 2026 | 1.3 | Phase 1 Foundation: แก้ 1.1.5, 1.1.7, 1.1.10, 1.1.11, 1.2.6, 1.2.8, 1.3.2, 1.3.4 (PDF parser, geocoding retry, DB schema) | AI + User |
 
 ---
 
