@@ -6,10 +6,8 @@ load_dotenv()
 # Google Maps API
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
-# AI Refinement API (LM Studio / Gemini / Ollama)
+# AI Refinement API (LM Studio)
 LMSTUDIO_URL = os.getenv("LMSTUDIO_URL", "http://localhost:1234/v1")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 ENABLE_AI_REFINEMENT = os.getenv("ENABLE_AI_REFINEMENT", "true").lower() == "true"
 
 # Depot (คลังสินค้า / ต้นทาง)

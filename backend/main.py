@@ -40,7 +40,7 @@ app.include_router(router, prefix="/api")
 def root():
     return {
         "message": "Logistics Route Planning System API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "docs": "/docs",
     }
 

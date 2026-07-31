@@ -1,12 +1,15 @@
-import json
-import os
 import math
 import logging
 from urllib.parse import quote
 
+from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+
 from database.db import get_vehicles_from_db
 
 logger = logging.getLogger(__name__)
+
+# Timeouts
+SOLVE_TIMEOUT_SECONDS = 30
 
 
 def load_vehicles() -> list[dict]:
@@ -24,17 +27,6 @@ def load_vehicles() -> list[dict]:
             {"id": 3, "name": "รถคันที่ 3 (รถกลาง 1.95 - 2.24 ตัน)", "plate": "กข 9012", "capacity": 2240, "driver": "สมบูรณ์", "active": True},
             {"id": 4, "name": "รถคันที่ 4 (รถใหญ่ 3.75 ตัน)", "plate": "กข 3456", "capacity": 3750, "driver": "สมเดช", "active": True},
         ]
-
-
-def calculate_angle_and_distance(depot_lat: float, depot_lng: float, lat: float, lng: float) -> tuple[float, float]:
-    """คำนวณมุม (Bearing) และระยะห่างจาก Depot สำหรับจัดกลุ่มโซนตามทิศทาง"""
-    if not lat or not lng:
-        return 0.0, 0.0
-    d_lat = lat - depot_lat
-    d_lng = lng - depot_lng
-    distance = math.sqrt(d_lat**2 + d_lng**2)
-    angle = math.atan2(d_lng, d_lat)  # radians (-pi to pi)
-    return angle, distance
 
 
 def generate_google_maps_link(stops: list[dict], depot: dict = None) -> str:
@@ -60,113 +52,204 @@ def generate_google_maps_link(stops: list[dict], depot: dict = None) -> str:
     return "https://www.google.com/maps/dir/" + "/".join(points)
 
 
-def _optimize_stops_sequence(stops: list[dict], depot_lat: float, depot_lng: float) -> list[dict]:
-    """จัดลำดับจุดส่งภายในรถแต่ละคันตามระยะทางใกล้สุด (Nearest Neighbor TSP)"""
-    if len(stops) <= 1:
-        return stops
-
-    curr_lat, curr_lng = depot_lat, depot_lng
-    unvisited = list(stops)
-    ordered = []
-
-    while unvisited:
-        nearest_idx = 0
-        min_dist = float("inf")
-        for idx, stop in enumerate(unvisited):
-            s_lat = stop.get("lat", depot_lat)
-            s_lng = stop.get("lng", depot_lng)
-            dist = math.sqrt((curr_lat - s_lat)**2 + (curr_lng - s_lng)**2)
-            if dist < min_dist:
-                min_dist = dist
-                nearest_idx = idx
-
-        nxt = unvisited.pop(nearest_idx)
-        ordered.append(nxt)
-        curr_lat = nxt.get("lat", depot_lat)
-        curr_lng = nxt.get("lng", depot_lng)
-
-    return ordered
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """คำนวณระยะทาง Haversine (km) ระหว่าง 2 จุด"""
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2
+    c = 2 * math.asin(math.sqrt(a))
+    return R * c
 
 
-def optimize_routes(
+def _distance_matrix_to_int_km(matrix: list[list[float]]) -> list[list[int]]:
+    """แปลง distance matrix (km float) เป็น int (เมตร) สำหรับ OR-Tools"""
+    return [[int(cell * 1000) for cell in row] for row in matrix]
+
+
+def _solve_vrp(
+    distance_matrix_int: list[list[int]],
+    num_vehicles: int,
+    vehicle_capacities: list[int],
+    order_demands: list[int],
+    depot_index: int = 0,
+) -> dict | None:
+    """แก้ปัญหา CVRPTW ด้วย OR-Tools"""
+
+    n = len(distance_matrix_int)
+
+    manager = pywrapcp.RoutingIndexManager(n, num_vehicles, depot_index)
+    routing = pywrapcp.RoutingModel(manager)
+
+    def distance_callback(from_index, to_index):
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+        return distance_matrix_int[from_node][to_node]
+
+    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+    # Capacity constraint
+    def demand_callback(from_index):
+        from_node = manager.IndexToNode(from_index)
+        return order_demands[from_node]
+
+    demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+    routing.AddDimensionWithVehicleCapacity(
+        demand_callback_index,
+        0,
+        vehicle_capacities,
+        True,
+        "Capacity",
+    )
+
+    # Distance limit per vehicle (optional, 500 km default)
+    routing.AddDimension(
+        transit_callback_index,
+        0,
+        500000,
+        True,
+        "Distance",
+    )
+
+    # Search parameters
+    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+    search_parameters.first_solution_strategy = (
+        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    )
+    search_parameters.local_search_metaheuristic = (
+        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    )
+    search_parameters.time_limit.seconds = SOLVE_TIMEOUT_SECONDS
+
+    solution = routing.SolveWithParameters(search_parameters)
+
+    if solution is None:
+        return None
+
+    return {
+        "solution": solution,
+        "routing": routing,
+        "manager": manager,
+    }
+
+
+def _extract_routes(
+    result: dict,
     orders: list[dict],
-    distance_matrix: list[list[float]] = None,
-    vehicles: list[dict] = None,
-    depot: dict = None,
+    vehicles: list[dict],
 ) -> list[dict]:
-    """คำนวณจัดรถและกระจายออเดอร์ให้รถทุกคันใน Fleet (Balanced Fleet Workload Distribution)
-    
-    หลักการทำงาน:
-    1. ดึงข้อมูลรถที่เปิดใช้งาน (Active Vehicles)
-    2. เรียงออเดอร์ตามทิศทางมุมองศาจาก Depot (Geographic Bearing Sector) เพื่อให้จุดที่อยู่โซนใกล้กันถูกกลุ่มเข้าด้วยกัน
-    3. แบ่งกลุ่มกระจายจุดส่งให้รถทุกคันเท่าๆ กันตามขีดจำกัดน้ำหนัก (Capacity & Fleet Balancing)
-    4. จัดลำดับจุดส่งภายในรถแต่ละคันให้ประหยัดระยะทางที่สุด (TSP Nearest Neighbor)
-    """
-    if not orders:
-        return []
+    """แปลง OR-Tools solution เป็น list of route dicts"""
+    solution = result["solution"]
+    routing = result["routing"]
+    manager = result["manager"]
 
-    if vehicles is None:
-        vehicles = load_vehicles()
+    routes = []
 
-    depot_lat = depot.get("lat", 13.781882) if depot else 13.781882
-    depot_lng = depot.get("lng", 100.425041) if depot else 100.425041
+    for vehicle_idx in range(len(vehicles)):
+        vehicle = vehicles[vehicle_idx]
+        index = routing.Start(vehicle_idx)
+        stops = []
+        total_distance = 0
+        total_weight = 0
 
-    num_vehicles = len(vehicles)
-    if num_vehicles == 0:
-        logger.warning("ไม่มีรถที่เปิดใช้งานในระบบ")
-        return []
+        while not routing.IsEnd(index):
+            node = manager.IndexToNode(index)
+            if node != 0:  # Skip depot
+                order = orders[node - 1]
+                weight = float(order.get("weight", 0))
+                total_weight += weight
+                stops.append({
+                    "id": order.get("id"),
+                    "customer": order.get("customer", ""),
+                    "address": order.get("address", ""),
+                    "weight": weight,
+                    "lat": order.get("lat"),
+                    "lng": order.get("lng"),
+                    "raw_lat": order.get("raw_lat", order.get("lat")),
+                    "raw_lng": order.get("raw_lng", order.get("lng")),
+                    "verified_lat": order.get("verified_lat", order.get("lat")),
+                    "verified_lng": order.get("verified_lng", order.get("lng")),
+                    "confidence_score": order.get("confidence_score", 30.0),
+                    "geocode_provider": order.get("geocode_provider", "google"),
+                    "is_verified": bool(order.get("is_verified", False)),
+                    "order_number": order.get("order_number"),
+                    "zone": order.get("zone", ""),
+                    "products": order.get("products", []),
+                })
 
-    # 1. คำนวณมุมทิศทางจาก Depot ให้แต่ละออเดอร์
+            prev_index = index
+            index = solution.Value(routing.NextVar(index))
+            total_distance += routing.GetArcCostForVehicle(prev_index, index, vehicle_idx)
+
+        if stops:
+            v_capacity = float(vehicle.get("capacity", 3750))
+            maps_link = generate_google_maps_link(stops, None)
+
+            routes.append({
+                "vehicle_id": vehicle.get("id", vehicle_idx + 1),
+                "plate": vehicle.get("plate", ""),
+                "driver": vehicle.get("driver", ""),
+                "name": vehicle.get("name", f"รถคันที่ {vehicle.get('id', vehicle_idx + 1)}"),
+                "capacity": v_capacity,
+                "stops": stops,
+                "total_weight": round(total_weight, 2),
+                "total_distance_km": round(total_distance / 1000, 2),
+                "google_maps_link": maps_link,
+            })
+
+    return routes
+
+
+def _fallback_sweep(
+    orders: list[dict],
+    vehicles: list[dict],
+    depot_lat: float,
+    depot_lng: float,
+) -> list[dict]:
+    """Fallback: Sweep + Nearest Neighbor TSP ถ้า OR-Tools ล้มเหลว"""
+
     for order in orders:
         lat = order.get("lat", depot_lat)
         lng = order.get("lng", depot_lng)
-        angle, dist = calculate_angle_and_distance(depot_lat, depot_lng, lat, lng)
-        order["_angle"] = angle
-        order["_distance_from_depot"] = dist
+        dlat = lat - depot_lat
+        dlng = lng - depot_lng
+        order["_angle"] = math.atan2(dlng, dlat)
+        order["_dist"] = math.sqrt(dlat**2 + dlng**2)
 
-    # 2. เรียงออเดอร์ตามทิศทางมุมองศา
     sorted_orders = sorted(orders, key=lambda x: x.get("_angle", 0))
-    total_orders = len(sorted_orders)
+    num_vehicles = len(vehicles)
+    target = math.ceil(len(sorted_orders) / num_vehicles)
 
-    # 3. กระจายออเดอร์ให้รถทุกคันใน Fleet อย่างสมดุล (Balanced Allocation)
-    target_stops_per_vehicle = math.ceil(total_orders / num_vehicles)
-    
     routes = []
-    order_cursor = 0
+    cursor = 0
 
     for v_idx, vehicle in enumerate(vehicles):
-        if order_cursor >= total_orders:
+        if cursor >= len(sorted_orders):
             break
 
         v_capacity = float(vehicle.get("capacity", 3750))
         current_weight = 0.0
-        vehicle_stops_raw = []
+        raw = []
 
-        # กำหนดโควตาจำนวนจุดส่งสำหรับคันนี้
-        # คันสุดท้ายเก็บส่วนที่เหลือทั้งหมด
-        max_stops_for_this_car = target_stops_per_vehicle if v_idx < num_vehicles - 1 else (total_orders - order_cursor)
+        max_pts = target if v_idx < num_vehicles - 1 else (len(sorted_orders) - cursor)
 
-        while order_cursor < total_orders and len(vehicle_stops_raw) < max_stops_for_this_car:
-            order = sorted_orders[order_cursor]
-            o_weight = float(order.get("weight", 0))
-
-            # หากน้ำหนักบรรทุกยังไม่เกินความจุรถ
-            if current_weight + o_weight <= v_capacity or len(vehicle_stops_raw) == 0:
-                vehicle_stops_raw.append(order)
-                current_weight += o_weight
-                order_cursor += 1
+        while cursor < len(sorted_orders) and len(raw) < max_pts:
+            order = sorted_orders[cursor]
+            w = float(order.get("weight", 0))
+            if current_weight + w <= v_capacity or not raw:
+                raw.append(order)
+                current_weight += w
+                cursor += 1
             else:
-                # ถ้าน้ำหนักเกิน ให้ตัดไปขึ้นรถคันถัดไป
                 break
 
-        if vehicle_stops_raw:
-            # 4. เรียงลำดับจุดส่งภายในรถแต่ละคันให้ประหยัดระยะทางที่สุด
-            ordered_stops = _optimize_stops_sequence(vehicle_stops_raw, depot_lat, depot_lng)
-            
-            # แปลงเป็น dict สำหรับ response
-            formatted_stops = []
+        if raw:
+            ordered_stops = _tsp_nearest_neighbor(raw, depot_lat, depot_lng)
+
+            formatted = []
             for stop in ordered_stops:
-                formatted_stops.append({
+                formatted.append({
                     "id": stop.get("id"),
                     "customer": stop.get("customer", ""),
                     "address": stop.get("address", ""),
@@ -182,10 +265,10 @@ def optimize_routes(
                     "is_verified": bool(stop.get("is_verified", False)),
                     "order_number": stop.get("order_number"),
                     "zone": stop.get("zone", ""),
-                    "products": stop.get("products", [])
+                    "products": stop.get("products", []),
                 })
 
-            maps_link = generate_google_maps_link(formatted_stops, depot)
+            maps_link = generate_google_maps_link(formatted, None)
 
             routes.append({
                 "vehicle_id": vehicle.get("id", v_idx + 1),
@@ -193,10 +276,114 @@ def optimize_routes(
                 "driver": vehicle.get("driver", ""),
                 "name": vehicle.get("name", f"รถคันที่ {vehicle.get('id', v_idx + 1)}"),
                 "capacity": v_capacity,
-                "stops": formatted_stops,
+                "stops": formatted,
                 "total_weight": round(current_weight, 2),
+                "total_distance_km": 0,
                 "google_maps_link": maps_link,
             })
 
-    logger.info(f"จัดกระจายรถสำเร็จ: กระจายงานลงรถ {len(routes)}/{num_vehicles} คัน, รวม {sum(len(r['stops']) for r in routes)} จุดส่ง")
+    return routes
+
+
+def _tsp_nearest_neighbor(stops: list[dict], depot_lat: float, depot_lng: float) -> list[dict]:
+    """จัดลำดับจุดส่งตาม Nearest Neighbor TSP"""
+    if len(stops) <= 1:
+        return stops
+
+    curr_lat, curr_lng = depot_lat, depot_lng
+    unvisited = list(stops)
+    ordered = []
+
+    while unvisited:
+        best_idx = 0
+        best_dist = float("inf")
+        for idx, stop in enumerate(unvisited):
+            s_lat = stop.get("lat", depot_lat)
+            s_lng = stop.get("lng", depot_lng)
+            dist = _haversine_km(curr_lat, curr_lng, s_lat, s_lng)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+
+        nxt = unvisited.pop(best_idx)
+        ordered.append(nxt)
+        curr_lat = nxt.get("lat", depot_lat)
+        curr_lng = nxt.get("lng", depot_lng)
+
+    return ordered
+
+
+def optimize_routes(
+    orders: list[dict],
+    distance_matrix: list[list[float]] = None,
+    vehicles: list[dict] = None,
+    depot: dict = None,
+) -> list[dict]:
+    """คำนวณเส้นทางจัดส่งด้วย OR-Tools CVRPTW (Capacitated VRP with Time Windows)
+
+    ขั้นตอน:
+    1. สร้าง distance matrix (depot = index 0)
+    2. เรียก OR-Tools solver พร้อม capacity constraints
+    3. ถ้าล้มเหลว fallback เป็น Sweep + Nearest Neighbor
+    4. คืนค่า list of route dicts
+    """
+    if not orders:
+        return []
+
+    if vehicles is None:
+        vehicles = load_vehicles()
+
+    num_vehicles = len(vehicles)
+    if num_vehicles == 0:
+        logger.warning("ไม่มีรถที่เปิดใช้งานในระบบ")
+        return []
+
+    depot_lat = depot.get("lat", 13.781882) if depot else 13.781882
+    depot_lng = depot.get("lng", 100.425041) if depot else 100.425041
+
+    # สร้าง distance matrix (depot = index 0, orders = index 1..n)
+    if distance_matrix is None or len(distance_matrix) != len(orders) + 1:
+        logger.info("สร้าง distance matrix ใหม่ (ไม่ได้รับจาก caller)")
+        all_points = [{"lat": depot_lat, "lng": depot_lng}] + orders
+        n = len(all_points)
+        matrix = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    lat1 = all_points[i].get("lat", depot_lat)
+                    lng1 = all_points[i].get("lng", depot_lng)
+                    lat2 = all_points[j].get("lat", depot_lat)
+                    lng2 = all_points[j].get("lng", depot_lng)
+                    matrix[i][j] = _haversine_km(lat1, lng1, lat2, lng2)
+        distance_matrix = matrix
+
+    # แปลงเป็น int (เมตร) สำหรับ OR-Tools
+    dm_int = _distance_matrix_to_int_km(distance_matrix)
+
+    # เตรียม capacity data
+    vehicle_capacities = [int(float(v.get("capacity", 3750))) for v in vehicles]
+    order_demands = [1] + [int(float(o.get("weight", 1))) for o in orders]  # depot = 0
+
+    # แก้ปัญหา VRP
+    logger.info(f"กำลังแก้ปัญหา VRP: {len(orders)} orders, {num_vehicles} vehicles (timeout={SOLVE_TIMEOUT_SECONDS}s)")
+
+    result = _solve_vrp(
+        distance_matrix_int=dm_int,
+        num_vehicles=num_vehicles,
+        vehicle_capacities=vehicle_capacities,
+        order_demands=order_demands,
+        depot_index=0,
+    )
+
+    if result is not None:
+        routes = _extract_routes(result, orders, vehicles)
+        total_stops = sum(len(r["stops"]) for r in routes)
+        logger.info(f"OR-Tools VRP สำเร็จ: {len(routes)} routes, {total_stops} stops")
+        return routes
+
+    # Fallback
+    logger.warning("OR-Tools VRP ล้มเหลว — ใช้ Sweep + Nearest Neighbor แทน")
+    routes = _fallback_sweep(orders, vehicles, depot_lat, depot_lng)
+    total_stops = sum(len(r["stops"]) for r in routes)
+    logger.info(f"Fallback: {len(routes)} routes, {total_stops} stops")
     return routes
