@@ -1,26 +1,42 @@
-import json
 import os
 import logging
 import urllib.parse
-import requests
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body
+import requests as http_requests
+from datetime import datetime, timezone
+from fastapi import APIRouter, UploadFile, File, HTTPException, Body, Depends, Request
 from fastapi.responses import Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from typing import Optional, Union, Any
+from typing import Optional, Union
+from sqlalchemy import text
 
 from services.pdf_extractor import extract_pdf
 from services.data_validator import validate_orders
 from services.geocoding import geocode_orders, reverse_geocode, get_google_maps_api_key
-from services.distance_matrix import get_distance_matrix
 from services.route_optimizer import optimize_routes, load_vehicles
 from services.excel_exporter import generate_all_routes_manifest_excel
-from services.email_sender import send_route_email
-from database.db import save_orders, save_route_plan, get_all_orders, get_route_history, clear_all_data, update_order_location, get_all_customer_locations, delete_customer_location, get_today_orders, get_today_active_routes, save_vehicles_to_db, get_vehicles_from_db, delete_vehicle_from_db
-from config import DEPOT_LAT, DEPOT_LNG, DEPOT_ADDRESS, GOOGLE_MAPS_API_KEY, ENABLE_AI_REFINEMENT
+from services.line_notifier import send_route_notification, send_driver_notification
+from database.db import save_orders, save_route_plan, get_all_orders, get_route_history, clear_all_data, update_order_location, get_all_customer_locations, delete_customer_location, get_today_orders, get_today_active_routes, save_vehicles_to_db, get_vehicles_from_db, delete_vehicle_from_db, update_stop_status, get_stop_status_history, get_delivery_dashboard, get_driver_route, get_route_driver_name, update_item_delivery, reschedule_stop
+from services.delivery_status import get_valid_next_statuses, get_status_label, get_status_color, calculate_delivery_summary
+from services.load_balancer import detect_imbalances, find_transfer_suggestions, execute_transfer, recalculate_route_after_transfer, calculate_utilization
+from services.notifications import get_notifications, mark_notification_read, mark_all_read, get_unread_count, add_notification
+from config import DEPOT_LAT, DEPOT_LNG, DEPOT_ADDRESS, GOOGLE_MAPS_API_KEY, MAX_FILE_SIZE_MB, MAX_PDF_PAGES
+from auth import login_user, get_current_user, require_role
+from metrics import record_route_planned, record_order_processed
+
+
+def _optional_user(request: Request):
+    """Get current user if authenticated, None otherwise (non-blocking)"""
+    try:
+        return get_current_user(request)
+    except HTTPException as e:
+        if e.status_code in (401, 403):
+            return None
+        raise
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(prefix="/v1")
 
 
 # ── Request/Response Models ──────────────────────────────────────
@@ -32,48 +48,84 @@ class PlanRoutesRequest(BaseModel):
     depot_lng: Optional[float] = None
 
 
-class SendEmailRequest(BaseModel):
-    routes: list[dict]
-    recipient: str
-
-
 class VerifyLocationRequest(BaseModel):
     lat: float
     lng: float
     verified_by: Optional[str] = "user"
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+# ── Auth Endpoints ────────────────────────────────────────────────
+
+@router.post("/auth/login")
+def login(request: LoginRequest):
+    """Login ด้วย username/password เพื่อรับ JWT token"""
+    result = login_user(request.username, request.password)
+    return result
+
+
+@router.get("/auth/me")
+def get_me(user: dict = Depends(get_current_user)):
+    """ดึงข้อมูลผู้ใช้ปัจจุบันจาก JWT token"""
+    return {"user": user}
+
+
+@router.get("/auth/users")
+def list_users(user: dict = Depends(require_role(["admin"]))):
+    """ดึงรายชื่อผู้ใช้ทั้งหมดจากฐานข้อมูล (admin only)"""
+    users = list_users_from_db()
+    return {"users": users}
+
+
 # ── Endpoints ────────────────────────────────────────────────────
 
 @router.get("/reverse-geocode")
-async def get_reverse_geocode(lat: float, lng: float):
+def get_reverse_geocode(lat: float, lng: float, user: dict = Depends(get_current_user)):
     """Reverse Geocoding: แปลงพิกัด lat/lng กลับเป็นที่อยู่"""
     addr = reverse_geocode(lat, lng)
     return {"formatted_address": addr, "lat": lat, "lng": lng}
 
 
 @router.post("/orders/{order_id}/verify-location")
-async def verify_order_location(order_id: int, req: VerifyLocationRequest):
-    """ยืนยัน/แก้ไขตำแหน่งพิกัดออเดอร์โดยผู้ใช้งานหรือคนขับรถ"""
-    success = update_order_location(order_id, req.lat, req.lng, req.verified_by or "user")
+def verify_order_location(order: dict = Depends(require_role(["admin", "dispatcher"])), order_id: int = None, req: VerifyLocationRequest = None):
+    """ยืนยัน/แก้ไขตำแหน่งพิกัดออเดอร์ (admin/dispatcher เท่านั้น)"""
+    success = update_order_location(order_id, req.lat, req.lng, req.verified_by or "dispatcher")
     if not success:
         raise HTTPException(status_code=404, detail="ไม่พบออเดอร์ดังกล่าวในฐานข้อมูล")
     return {"status": "success", "message": f"ยืนยันตำแหน่ง Order #{order_id} สำเร็จ", "lat": req.lat, "lng": req.lng}
 
 @router.post("/upload")
-async def upload_pdf(file: UploadFile = File(...), use_ai: bool = Form(True)):
+async def upload_pdf(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     """อัปโหลดไฟล์ PDF ไฟล์เดียว"""
-    _validate_file(file)
-    content = await file.read()
-    orders = extract_pdf(content, file.filename, use_ai=use_ai)
+    content = await _validate_file_content(file)
+    orders = await run_in_threadpool(extract_pdf, content, file.filename)
+    
+    # ตรวจสอบว่ามี error จาก PDF parser (เช่น สินค้าไม่เจอใน Product table)
+    if orders and orders[0].get("error"):
+        error_data = orders[0]
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": error_data["error"],
+                "missing_products": error_data.get("missing_products", []),
+                "customer": error_data.get("customer"),
+                "order_number": error_data.get("order_number")
+            }
+        )
+    
     validated = validate_orders(orders)
-    geocoded = geocode_orders(validated)
-    save_orders(geocoded)
+    geocoded = await run_in_threadpool(geocode_orders, validated)
+    await run_in_threadpool(save_orders, geocoded)
+    record_order_processed("success")
     return {"orders": geocoded}
 
 
 @router.post("/upload-multiple")
-async def upload_multiple_files(files: list[UploadFile] = File(...), use_ai: bool = Form(True)):
+async def upload_multiple_files(files: list[UploadFile] = File(...), user: dict = Depends(get_current_user)):
     """อัปโหลดไฟล์ PDF หลายไฟล์"""
     all_orders = []
     debug_info = []
@@ -81,9 +133,22 @@ async def upload_multiple_files(files: list[UploadFile] = File(...), use_ai: boo
 
     for file in files:
         try:
-            _validate_file(file)
-            content = await file.read()
-            orders = extract_pdf(content, file.filename, use_ai=use_ai)
+            content = await _validate_file_content(file)
+            orders = await run_in_threadpool(extract_pdf, content, file.filename)
+            
+            # ตรวจสอบว่ามี error จาก PDF parser (เช่น สินค้าไม่เจอใน Product table)
+            if orders and orders[0].get("error"):
+                error_data = orders[0]
+                errors.append({
+                    "filename": file.filename,
+                    "error": error_data["error"],
+                    "missing_products": error_data.get("missing_products", []),
+                    "customer": error_data.get("customer"),
+                    "order_number": error_data.get("order_number")
+                })
+                logger.warning(f"Skip file {file.filename}: {error_data['error']}")
+                continue
+            
             all_orders.extend(orders)
             debug_info.append({
                 "filename": file.filename,
@@ -95,15 +160,18 @@ async def upload_multiple_files(files: list[UploadFile] = File(...), use_ai: boo
             errors.append({"filename": file.filename, "error": e.detail})
             logger.warning(f"Skip file {file.filename}: {e.detail}")
         except Exception as e:
-            errors.append({"filename": file.filename, "error": str(e)})
-            logger.error(f"Error processing {file.filename}: {e}")
+            errors.append({"filename": file.filename, "error": "File processing failed"})
+            logger.error(f"Error processing {file.filename}: {e}", exc_info=True)
 
     # Validate and geocode all orders
     validated = validate_orders(all_orders)
-    geocoded = geocode_orders(validated)
+    geocoded = await run_in_threadpool(geocode_orders, validated)
 
     # Save to Database
-    save_orders(geocoded)
+    await run_in_threadpool(save_orders, geocoded)
+
+    # Record metrics
+    record_order_processed("success" if not errors else "partial")
 
     logger.info(f"Total orders: {len(geocoded)}")
     return {
@@ -116,7 +184,7 @@ async def upload_multiple_files(files: list[UploadFile] = File(...), use_ai: boo
 
 
 @router.post("/plan-routes")
-async def plan_routes(request: PlanRoutesRequest):
+def plan_routes(request: PlanRoutesRequest, user: dict = Depends(get_current_user)):
     """คำนวณเส้นทางจัดส่ง"""
     orders = request.orders
     if not orders:
@@ -124,8 +192,8 @@ async def plan_routes(request: PlanRoutesRequest):
 
     # Depot
     depot = {
-        "lat": request.depot_lat or DEPOT_LAT,
-        "lng": request.depot_lng or DEPOT_LNG,
+        "lat": request.depot_lat if request.depot_lat is not None else DEPOT_LAT,
+        "lng": request.depot_lng if request.depot_lng is not None else DEPOT_LNG,
         "address": request.depot_address or DEPOT_ADDRESS,
     }
 
@@ -133,17 +201,20 @@ async def plan_routes(request: PlanRoutesRequest):
         # Re-geocode all orders with high-precision Google Maps Engine
         orders = geocode_orders(orders, force_refresh=True)
 
-        # สร้าง distance matrix (depot เป็นจุดที่ 0)
-        distance_matrix = get_distance_matrix(orders, depot)
-
         # โหลดข้อมูลรถ
         vehicles = load_vehicles()
 
-        # Optimize routes
-        routes = optimize_routes(orders, distance_matrix, vehicles, depot)
+        # Optimize routes (distance matrix computed internally)
+        result = optimize_routes(orders, vehicles=vehicles, depot=depot)
+        routes = result["routes"]
+        warnings = result.get("warnings", [])
+        clustered = result.get("clustered", False)
 
         # Save route plan to Database
         plan_id = save_route_plan(routes, depot)
+
+        # Record metrics
+        record_route_planned()
 
         return {
             "plan_id": plan_id,
@@ -151,50 +222,109 @@ async def plan_routes(request: PlanRoutesRequest):
             "total_orders": len(orders),
             "total_vehicles": len(routes),
             "depot": depot,
+            "warnings": warnings,
+            "clustered": clustered,
+            "deferred_orders": result.get("deferred_orders", []),
+            "deferred_weight": result.get("deferred_weight", 0),
+            "deferred_count": result.get("deferred_count", 0),
         }
 
     except Exception as e:
         logger.error(f"Route planning error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"เกิดข้อผิดพลาดในการคำนวณเส้นทาง: {str(e)}")
+        raise HTTPException(status_code=500, detail="เกิดข้อผิดพลาดในการคำนวณเส้นทาง")
+
+
+@router.post("/plan-routes/async")
+def plan_routes_async(request: PlanRoutesRequest, user: dict = Depends(get_current_user)):
+    """คำนวณเส้นทางจัดส่งแบบ async (ใช้ Celery Background Task)"""
+    import uuid
+    from tasks import optimize_routes_task
+    from tasks import get_task_status as get_task_status_store
+
+    orders = request.orders
+    if not orders:
+        raise HTTPException(status_code=400, detail="ไม่มีรายการสั่งซื้อ")
+
+    depot = {
+        "lat": request.depot_lat if request.depot_lat is not None else DEPOT_LAT,
+        "lng": request.depot_lng if request.depot_lng is not None else DEPOT_LNG,
+        "address": request.depot_address or DEPOT_ADDRESS,
+    }
+
+    task_id = str(uuid.uuid4())
+
+    try:
+        task = optimize_routes_task.delay(orders=orders, depot=depot, task_id=task_id)
+        logger.info(f"Async route planning started: task_id={task_id}, celery_id={task.id}")
+
+        return {
+            "task_id": task_id,
+            "celery_task_id": task.id,
+            "status": "queued",
+            "message": "Route optimization task started. Poll /tasks/{task_id} for status.",
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to enqueue route planning task: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Task queue unavailable. Use synchronous /plan-routes endpoint.")
+
+
+@router.get("/tasks/{task_id}")
+def get_task_status(task_id: str, user: dict = Depends(get_current_user)):
+    """ดึงสถานะของ background task"""
+    from tasks import get_task_status as get_task_status_store
+
+    status_info = get_task_status_store(task_id)
+    return status_info
+
+
+@router.get("/tasks")
+def list_active_tasks(user: dict = Depends(get_current_user)):
+    """ดึงรายการ background tasks ทั้งหมด (last 100)"""
+    from tasks import get_task_status as get_task_status_store
+
+    # Note: listing all tasks from Redis requires scanning, which is expensive.
+    # For now, return empty list — users should poll specific task IDs.
+    return {"tasks": [], "total": 0, "note": "Poll specific task IDs via GET /tasks/{task_id}"}
 
 
 @router.get("/history")
-async def get_history(limit: int = 20):
+def get_history(limit: int = 20, user: dict = Depends(get_current_user)):
     """ดึงประวัติการประมวลผลจัดคิวรถย้อนหลัง จาก Database"""
     history = get_route_history(limit)
     return {"history": history, "total": len(history)}
 
 
 @router.get("/orders/today")
-async def get_today_orders_api():
+def get_today_orders_api(user: dict = Depends(get_current_user)):
     """ดึงรายการออเดอร์เฉพาะวันปัจจุบัน (ตัดรอบเที่ยงคืน)"""
     orders = get_today_orders()
     return {"orders": orders, "total": len(orders)}
 
 
 @router.get("/routes/today")
-async def get_today_routes_api():
+def get_today_routes_api(user: dict = Depends(get_current_user)):
     """ดึงแผนเส้นทางจัดคิวรถล่าสุดเฉพาะวันปัจจุบัน (ตัดรอบเที่ยงคืน)"""
     routes = get_today_active_routes()
     return {"routes": routes, "total": len(routes)}
 
 
 @router.get("/orders-history")
-async def get_orders_history(limit: int = 100):
+def get_orders_history(limit: int = 100, user: dict = Depends(get_current_user)):
     """ดึงออเดอร์ทั้งหมดที่เคยบันทึกใน Database"""
     orders = get_all_orders(limit)
     return {"orders": orders, "total": len(orders)}
 
 
 @router.get("/customer-locations")
-async def get_customer_locations(limit: int = 200):
+def get_customer_locations(limit: int = 200, user: dict = Depends(get_current_user)):
     """ดึงข้อมูลคลังความจำพิกัดถาวรของลูกค้าทั้งหมด"""
     locations = get_all_customer_locations(limit)
     return {"locations": locations, "total": len(locations)}
 
 
 @router.delete("/customer-locations/{loc_id}")
-async def remove_customer_location(loc_id: int):
+def remove_customer_location(loc_id: int, user: dict = Depends(require_role(["admin", "dispatcher"]))):
     """ลบพิกัดความจำถาวรของลูกค้าตาม ID"""
     success = delete_customer_location(loc_id)
     if not success:
@@ -203,42 +333,28 @@ async def remove_customer_location(loc_id: int):
 
 
 @router.get("/orders/low-confidence")
-async def get_low_confidence_orders(threshold: float = 70.0):
+def get_low_confidence_orders(threshold: float = 70.0, user: dict = Depends(get_current_user)):
     """ดึงออเดอร์ที่ Confidence Score ต่ำกว่า threshold (ค่าเริ่มต้น 70%) — 1.2.6"""
     all_orders = get_all_orders(limit=500)
     low_conf = [o for o in all_orders if (o.get("confidence_score") or 0) < threshold]
     return {"orders": low_conf, "total": len(low_conf), "threshold": threshold}
 
 
-@router.post("/send-email")
-async def send_email(request: SendEmailRequest):
-    """ส่งแผนเส้นทางทาง email"""
-    if not request.recipient:
-        raise HTTPException(status_code=400, detail="กรุณาระบุอีเมลผู้รับ")
-
-    result = send_route_email(request.routes, request.recipient)
-
-    if result["status"] == "error":
-        raise HTTPException(status_code=500, detail=result.get("message", "ส่ง email ไม่สำเร็จ"))
-
-    return result
-
-
 @router.get("/vehicles")
-async def get_vehicles():
-    """ดึงข้อมูลรถทั้งหมดจาก SQLite Database (รวมคันที่เปิดและปิดใช้งาน)"""
+def get_vehicles(user: dict = Depends(get_current_user)):
+    """ดึงข้อมูลรถทั้งหมดจาก Database (รวมคันที่เปิดและปิดใช้งาน)"""
     try:
         vehicles = get_vehicles_from_db()
         return {"vehicles": vehicles}
     except Exception as e:
-        logger.error(f"Error loading vehicles from DB: {e}")
+        logger.error(f"Error loading vehicles from DB: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="ไม่สามารถโหลดข้อมูลรถจาก Database ได้")
 
 
 
 @router.get("/search-place")
 @router.get("/search-location")
-async def search_place(address: str = None, q: str = None):
+def search_place(address: str = None, q: str = None, user: dict = Depends(get_current_user)):
     """ค้นหาสถานที่จริงและพิกัดบนแผนที่ผ่าน Google Places API & Esri Engine"""
     query = address or q
     if not query or len(query.strip()) < 2:
@@ -248,11 +364,11 @@ async def search_place(address: str = None, q: str = None):
     google_key = get_google_maps_api_key()
     results = []
 
-    # 1. 🌟 Google Places Text Search (High Precision POI Search)
+    # 1. Google Places Text Search (High Precision POI Search)
     if google_key and not google_key.startswith("YOUR_"):
         try:
             places_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={urllib.parse.quote(clean_q)}&key={google_key}&language=th&region=th"
-            res = requests.get(places_url, timeout=3.0)
+            res = http_requests.get(places_url, timeout=3.0)
             if res.status_code == 200:
                 data = res.json()
                 if data.get("status") == "OK" and data.get("results"):
@@ -270,12 +386,12 @@ async def search_place(address: str = None, q: str = None):
                     if results:
                         return {"results": results}
         except Exception as e:
-            logger.warning(f"Google Places search endpoint error: {e}")
+            logger.warning(f"Google Places search error: {e}")
 
-    # 2. 📍 Esri World Geocoding Fallback
+    # 2. Esri World Geocoding Fallback
     try:
         url = f'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine={urllib.parse.quote(clean_q + " Thailand")}&outFields=Match_addr,Addr_type&maxLocations=5'
-        res = requests.get(url, timeout=3.0)
+        res = http_requests.get(url, timeout=3.0)
         if res.status_code == 200:
             candidates = res.json().get('candidates', [])
             for cand in candidates:
@@ -294,8 +410,8 @@ async def search_place(address: str = None, q: str = None):
 
 
 @router.put("/vehicles")
-async def update_vehicles_config(payload: Union[list[dict], dict] = Body(...)):
-    """บันทึก/อัปเดตข้อมูลรถ ทะเบียน คนขับ และความจุบรรทุก ลงใน SQLite Database"""
+def update_vehicles_config(payload: Union[list[dict], dict] = Body(...), user: dict = Depends(require_role(["admin", "dispatcher"]))):
+    """บันทึก/อัปเดตข้อมูลรถ ทะเบียน คนขับ และความจุบรรทุก ลงใน Database (admin/dispatcher)"""
     try:
         if isinstance(payload, dict):
             vehicles = payload.get("vehicles", [])
@@ -308,21 +424,22 @@ async def update_vehicles_config(payload: Union[list[dict], dict] = Body(...)):
         return {"status": "success", "vehicles": get_vehicles_from_db()}
     except Exception as e:
         logger.error(f"Error updating vehicles in DB: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"ไม่สามารถบันทึกข้อมูลรถลงใน Database: {str(e)}")
+        raise HTTPException(status_code=500, detail="ไม่สามารถบันทึกข้อมูลรถได้ กรุณาลองใหม่")
 
 
 @router.delete("/vehicles/{vehicle_id}")
-async def delete_vehicle(vehicle_id: int):
-    """ลบรถขนส่งคันที่ระบุออกจาก SQLite Database"""
+def delete_vehicle(vehicle_id: int, user: dict = Depends(require_role(["admin"]))):
+    """ลบรถขนส่งคันที่ระบุออกจาก Database (admin only)"""
     try:
         delete_vehicle_from_db(vehicle_id)
         return {"status": "success", "vehicles": get_vehicles_from_db()}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ไม่สามารถลบรถใน Database: {e}")
+        logger.error(f"Error deleting vehicle: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="ไม่สามารถลบรถได้ กรุณาลองใหม่")
 
 
 @router.post("/export-manifest-excel")
-async def export_manifest_excel(payload: dict):
+def export_manifest_excel(payload: dict, user: dict = Depends(get_current_user)):
     """ส่งออกไฟล์ Excel ใบสั่งงานคนขับรถ (Driver Manifest) รวมทุกคัน"""
     routes = payload.get("routes", [])
     if not routes:
@@ -336,39 +453,57 @@ async def export_manifest_excel(payload: dict):
 
 
 @router.get("/system-status")
-async def get_system_status():
-    """ดึงสถานะ API Key, AI Layer และฐานข้อมูล"""
+def get_system_status(user: dict = Depends(get_current_user)):
+    """ดึงสถานะ API Key และฐานข้อมูล"""
     has_google_key = bool(GOOGLE_MAPS_API_KEY and not GOOGLE_MAPS_API_KEY.startswith("YOUR_"))
     db_orders = len(get_all_orders())
     return {
         "google_maps_api": "active" if has_google_key else "fallback",
-        "ai_refinement": "active" if ENABLE_AI_REFINEMENT else "disabled",
         "total_orders_in_db": db_orders
     }
 
 
 @router.post("/clear-data")
-async def clear_system_data():
-    """ล้างข้อมูลออเดอร์ แผนจัดส่ง และรีเซ็ตข้อมูล Fleet ในระบบทั้งหมด"""
+def clear_system_data(payload: dict, user: dict = Depends(require_role(["admin"]))):
+    """ล้างข้อมูลออเดอร์ แผนจัดส่ง และรีเซ็ตข้อมูล Fleet ในระบบทั้งหมด (admin only)"""
+    # Require typed confirmation
+    confirm = payload.get("confirm", "")
+    if confirm != "CLEAR_ALL_DATA":
+        raise HTTPException(
+            status_code=400,
+            detail='กรุณาส่ง {"confirm": "CLEAR_ALL_DATA"} เพื่อยืนยันการล้างข้อมูล'
+        )
     try:
         clear_all_data()
-        
-        # Reset vehicles.json to default 4 fleet vehicles
-        v_file = os.path.join(os.path.dirname(__file__), "..", "data", "vehicles.json")
-        default_vehicles = [
-            {"id": 1, "name": "รถคันที่ 1 (รถใหญ่ 3.75 ตัน)", "plate": "กข 1234", "capacity": 3750, "driver": "สมชาย", "active": True},
-            {"id": 2, "name": "รถคันที่ 2 (รถกลาง 1.8 - 1.9 ตัน)", "plate": "กข 5678", "capacity": 1900, "driver": "สมศักดิ์", "active": True},
-            {"id": 3, "name": "รถคันที่ 3 (รถกลาง 1.95 - 2.24 ตัน)", "plate": "กข 9012", "capacity": 2240, "driver": "สมบูรณ์", "active": True},
-            {"id": 4, "name": "รถคันที่ 4 (รถใหญ่ 3.75 ตัน)", "plate": "กข 3456", "capacity": 3750, "driver": "สมเดช", "active": True}
-        ]
-        with open(v_file, "w", encoding="utf-8") as f:
-            json.dump(default_vehicles, f, ensure_ascii=False, indent=4)
-
+        logger.warning(f"ALL DATA CLEARED by user: {user.get('username', 'unknown')}")
         return {"status": "success", "message": "ล้างข้อมูลทั้งหมดในระบบเรียบร้อยแล้ว"}
     except Exception as e:
-        logger.error(f"Error clearing data: {e}")
-        raise HTTPException(status_code=500, detail=f"ไม่สามารถล้างข้อมูล: {e}")
+        logger.error(f"Error clearing data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="ไม่สามารถล้างข้อมูลได้ กรุณาลองใหม่")
 
+
+@router.post("/send-line-notification")
+def send_line_notification(payload: dict, user: dict = Depends(require_role(["admin", "dispatcher"]))):
+    """ส่ง LINE notification สรุปแผนเส้นทาง (admin/dispatcher)"""
+    routes = payload.get("routes", [])
+    user_id = payload.get("user_id")
+    if not routes:
+        raise HTTPException(status_code=400, detail="ไม่มีข้อมูลเส้นทาง")
+    result = send_route_notification(routes, user_id)
+    return result
+
+
+@router.post("/send-driver-notification")
+def send_driver_line_notification(payload: dict, user: dict = Depends(require_role(["admin", "dispatcher"]))):
+    """ส่ง LINE notification ไปยังคนขับเฉพาะคัน (admin/dispatcher)"""
+    route = payload.get("route", {})
+    driver_line_user_id = payload.get("driver_line_user_id")
+    if not route:
+        raise HTTPException(status_code=400, detail="ไม่มีข้อมูลเส้นทาง")
+    if not driver_line_user_id:
+        raise HTTPException(status_code=400, detail="ไม่มี LINE User ID ของคนขับ")
+    result = send_driver_notification(route, driver_line_user_id)
+    return result
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -379,8 +514,366 @@ def _validate_file(file: UploadFile):
         raise HTTPException(status_code=400, detail="ไม่มีชื่อไฟล์")
 
     if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail=f"รองรับเฉพาะไฟล์ PDF (ได้รับ: {file.filename})")
+        raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ PDF เท่านั้น")
 
     # ตรวจ content type
     if file.content_type and file.content_type != "application/pdf":
-        logger.warning(f"File {file.filename} has content_type: {file.content_type}")
+        raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์ PDF เท่านั้น")
+
+    # ตรวจ file size (enforce MAX_FILE_SIZE_MB from config)
+    if file.size and file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f"ไฟล์เกินขนาดสูงสุด {MAX_FILE_SIZE_MB} MB"
+        )
+
+
+async def _validate_file_content(file: UploadFile) -> bytes:
+    """อ่านไฟล์แบบ streaming (ไม่โหลดทั้งไฟล์เข้า RAM) + ตรวจ magic bytes + จำกัดขนาด/จำนวนหน้า"""
+    _validate_file(file)
+
+    # Read first 4 bytes for magic byte check
+    header = await file.read(4)
+    await file.seek(0)  # Reset to beginning
+
+    # PDF magic bytes: %PDF
+    if not header.startswith(b'%PDF'):
+        raise HTTPException(status_code=400, detail="ไฟล์ไม่ใช่ PDF ที่ถูกต้อง")
+
+    # Stream-read with hard size cap (ป้องกัน memory exhaustion DoS)
+    max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+    chunks = []
+    total = 0
+    CHUNK = 1024 * 1024  # 1 MB
+    while True:
+        chunk = await file.read(CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"ไฟล์เกินขนาดสูงสุด {MAX_FILE_SIZE_MB} MB"
+            )
+        chunks.append(chunk)
+
+    content = b"".join(chunks)
+
+    # จำกัดจำนวนหน้า PDF (ป้องกัน decompression-bomb / parse CPU DoS)
+    try:
+        import fitz
+        doc = fitz.open(stream=content, filetype="pdf")
+        page_count = doc.page_count
+        doc.close()
+        if page_count > MAX_PDF_PAGES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"PDF มี {page_count} หน้า เกินขีดจำกัด {MAX_PDF_PAGES} หน้า"
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        # ถ้าเปิด PDF ไม่ได้ (ไฟล์เสีย) ให้ปล่อยผ่านเพื่อให้ extract_pdf รายงานต่อ
+        pass
+
+    return content
+
+
+# ── Delivery Status Endpoints ────────────────────────────────────
+
+class UpdateStopStatusRequest(BaseModel):
+    route_id: int
+    stop_id: int
+    status: str
+    note: Optional[str] = ""
+    order_id: Optional[int] = None
+
+
+class UpdateItemDeliveryRequest(BaseModel):
+    stop_id: int
+    order_item_id: int
+    delivered_qty: float
+    status: Optional[str] = "delivered"
+    note: Optional[str] = ""
+
+
+class RescheduleRequest(BaseModel):
+    route_id: int
+    stop_id: int
+    reason: Optional[str] = ""
+
+
+@router.post("/delivery/update-status")
+def delivery_update_status(req: UpdateStopStatusRequest, user: dict = Depends(get_current_user)):
+    """อัปเดตสถานะจุดจอด (driver/dispatcher)"""
+    # ตรวจสอบสิทธิ์: driver เปลี่ยนได้เฉพาะจุดจอดในเส้นทางของตัวเอง
+    role = user.get("role", "user")
+    if role == "driver":
+        route_driver = get_route_driver_name(req.route_id)
+        if route_driver != user.get("username"):
+            raise HTTPException(
+                status_code=403,
+                detail="ไม่มีสิทธิ์อัปเดตสถานะของเส้นทางนี้"
+            )
+    result = update_stop_status(
+        route_id=req.route_id,
+        stop_id=req.stop_id,
+        new_status=req.status.upper(),
+        updated_by=user.get("username", "driver"),
+        note=req.note or "",
+        order_id=req.order_id
+    )
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    # Fire notification for failed deliveries
+    if req.status.upper() == "FAILED":
+        from services.notifications import notify_delivery_failed
+        notify_delivery_failed(
+            customer=f"Order #{req.stop_id}",
+            driver=user.get("username", "driver"),
+            reason=req.note or "ไม่ระบุเหตุผล",
+            route_id=req.route_id,
+            stop_id=req.stop_id,
+        )
+
+    return result
+
+
+@router.get("/delivery/status-history/{route_id}")
+def delivery_status_history(route_id: int, stop_id: int = None, user: dict = Depends(get_current_user)):
+    """ดึงประวัติการเปลี่ยนสถานะของ stop"""
+    history = get_stop_status_history(route_id, stop_id)
+    return {"history": history, "total": len(history)}
+
+
+@router.get("/delivery/dashboard")
+def delivery_dashboard(user: dict = Depends(get_current_user)):
+    """ดึงข้อมูล Dashboard สถานะการจัดส่งวันนี้"""
+    dashboard = get_delivery_dashboard()
+    return dashboard
+
+
+@router.get("/delivery/driver/{driver_name}")
+def driver_route(driver_name: str, user: dict = Depends(get_current_user)):
+    """ดึงเส้นทางของคนขับวันนี้ (driver เห็นได้เฉพาะเส้นทางตัวเอง)"""
+    role = user.get("role", "user")
+    if role == "driver" and driver_name != user.get("username"):
+        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ดูเส้นทางของคนขับอื่น")
+    route = get_driver_route(driver_name)
+    if not route:
+        raise HTTPException(status_code=404, detail="ไม่พบเส้นทางของคนขับวันนี้")
+    return route
+
+
+@router.get("/delivery/valid-transitions/{current_status}")
+def valid_transitions(current_status: str, user: dict = Depends(get_current_user)):
+    """ดึงสถานะถัดไปที่สามารถเปลี่ยนได้"""
+    statuses = get_valid_next_statuses(current_status.upper())
+    return {
+        "current_status": current_status.upper(),
+        "valid_next_statuses": statuses,
+        "labels": {s: get_status_label(s) for s in statuses},
+        "colors": {s: get_status_color(s) for s in statuses},
+    }
+
+
+@router.post("/delivery/update-item")
+def delivery_update_item(req: UpdateItemDeliveryRequest, user: dict = Depends(get_current_user)):
+    """อัปเดตสถานะการจัดส่งระดับ item"""
+    success = update_item_delivery(
+        stop_id=req.stop_id,
+        order_item_id=req.order_item_id,
+        delivered_qty=req.delivered_qty,
+        status=req.status,
+        note=req.note or ""
+    )
+    if not success:
+        raise HTTPException(status_code=500, detail="ไม่สามารถอัปเดตสถานะสินค้าได้")
+    return {"success": True}
+
+
+@router.post("/delivery/reschedule")
+def delivery_reschedule(req: RescheduleRequest, user: dict = Depends(require_role(["admin", "dispatcher"]))):
+    """เลื่อนการจัดส่ง (admin/dispatcher only)"""
+    result = reschedule_stop(
+        route_id=req.route_id,
+        stop_id=req.stop_id,
+        reason=req.reason or "เลื่อนจัดส่ง",
+        updated_by=user.get("username", "dispatcher")
+    )
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    # Fire notification
+    from services.notifications import notify_stop_rescheduled
+    notify_stop_rescheduled(
+        customer=f"Order #{req.stop_id}",
+        reason=req.reason or "เลื่อนจัดส่ง",
+        dispatcher=user.get("username", "dispatcher"),
+    )
+
+    return result
+
+
+@router.get("/delivery/summary")
+def delivery_summary(user: dict = Depends(get_current_user)):
+    """ดึงสรุปสถานะการจัดส่งวันนี้"""
+    dashboard = get_delivery_dashboard()
+    if not dashboard.get("has_plan"):
+        return {"has_plan": False, "summary": None}
+    return {"has_plan": True, "summary": dashboard["summary"], "routes": dashboard["routes"]}
+
+
+# ── Load Balancing Endpoints ─────────────────────────────────────
+
+class ExecuteTransferRequest(BaseModel):
+    source_route_id: int
+    target_route_id: int
+    stop_id: int
+
+
+@router.get("/load-balance/analyze")
+def load_balance_analyze(user: dict = Depends(get_current_user)):
+    """วิเคราะห์สถานะรถทุกคัน — ตรวจจับ overflow/underflow"""
+    routes = get_today_active_routes()
+    if not routes:
+        return {"has_routes": False, "message": "ยังไม่มีเส้นทางวันนี้"}
+
+    imbalances = detect_imbalances(routes)
+    return {
+        "has_routes": True,
+        "vehicles": imbalances["vehicles"],
+        "overflow_count": len(imbalances["overflow"]),
+        "underflow_count": len(imbalances["underflow"]),
+        "needs_transfer": imbalances["needs_transfer"],
+    }
+
+
+@router.get("/load-balance/suggestions")
+def load_balance_suggestions(user: dict = Depends(get_current_user)):
+    """หาคำแนะนำการย้าย stop ระหว่างรถ"""
+    routes = get_today_active_routes()
+    if not routes:
+        return {"has_routes": False, "suggestions": []}
+
+    suggestions = find_transfer_suggestions(routes)
+    return {
+        "has_routes": True,
+        "suggestions": suggestions,
+        "total": len(suggestions),
+    }
+
+
+@router.post("/load-balance/execute")
+def load_balance_execute(req: ExecuteTransferRequest, user: dict = Depends(require_role(["admin", "dispatcher"]))):
+    """Execute transfer — ย้าย stop จาก source ไป target"""
+    result = execute_transfer(
+        source_route_id=req.source_route_id,
+        target_route_id=req.target_route_id,
+        stop_id=req.stop_id,
+        approved_by=user.get("username", "dispatcher")
+    )
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    # Re-calculate route sequence
+    recalculate_route_after_transfer(req.target_route_id)
+
+    # Fire notification
+    from services.notifications import notify_transfer_executed
+    notify_transfer_executed(
+        source_driver=f"Route #{req.source_route_id}",
+        target_driver=f"Route #{req.target_route_id}",
+        customer=f"Stop #{req.stop_id}",
+        approved_by=user.get("username", "dispatcher"),
+    )
+
+    return result
+
+
+@router.get("/load-balance/vehicle/{route_id}")
+def load_balance_vehicle_detail(route_id: int, user: dict = Depends(get_current_user)):
+    """ดึงรายละเอียด utilization ของรถคันเดียว"""
+    routes = get_today_active_routes()
+    if not routes:
+        raise HTTPException(status_code=404, detail="ไม่พบเส้นทางวันนี้")
+
+    for route in routes:
+        if route.get("id") == route_id:
+            util = calculate_utilization(route, route.get("capacity", 3750))
+            return util
+
+    raise HTTPException(status_code=404, detail="ไม่พบเส้นทาง")
+
+
+@router.get("/load-balance/transfer-history")
+def load_balance_transfer_history(user: dict = Depends(get_current_user)):
+    """ดึงประวัติการย้าย stop วันนี้"""
+    from database.db import SessionLocal
+    from database.models import RouteTransfer
+
+    db = SessionLocal()
+    try:
+        today = datetime.now(timezone.utc).date()
+        transfers = db.query(RouteTransfer).filter(
+            text("DATE(created_at AT TIME ZONE 'UTC') = :today")
+        ).params(today=today).order_by(RouteTransfer.created_at.desc()).all()
+
+        return {
+            "transfers": [
+                {
+                    "id": t.id,
+                    "stop_id": t.stop_id,
+                    "order_id": t.order_id,
+                    "from_route_id": t.from_route_id,
+                    "to_route_id": t.to_route_id,
+                    "from_vehicle_id": t.from_vehicle_id,
+                    "to_vehicle_id": t.to_vehicle_id,
+                    "transfer_type": t.transfer_type,
+                    "reason": t.reason,
+                    "approved_by": t.approved_by,
+                    "created_at": t.created_at,
+                }
+                for t in transfers
+            ],
+            "total": len(transfers),
+        }
+    finally:
+        db.close()
+
+
+# ── Notification Endpoints ───────────────────────────────────────
+
+@router.get("/notifications")
+def list_notifications(unread: bool = False, limit: int = 50, user: dict = Depends(get_current_user)):
+    """ดึง notifications"""
+    role = user.get("role", "dispatcher")
+    notifs = get_notifications(target_role=role, unread_only=unread, limit=limit)
+    unread_count = get_unread_count(target_role=role)
+    return {"notifications": notifs, "total": len(notifs), "unread_count": unread_count}
+
+
+@router.get("/notifications/unread-count")
+def notification_unread_count(user: dict = Depends(get_current_user)):
+    """ดึงจำนวน unread notifications"""
+    role = user.get("role", "dispatcher")
+    count = get_unread_count(target_role=role)
+    return {"unread_count": count}
+
+
+@router.put("/notifications/{notification_id}/read")
+def mark_read(notification_id: int, user: dict = Depends(get_current_user)):
+    """ทำเครื่องหมาย notification เป็นอ่านแล้ว (เฉพาะ notification ของ role ตนเอง)"""
+    success = mark_notification_read(notification_id, target_role=user.get("role"))
+    if not success:
+        raise HTTPException(status_code=404, detail="ไม่พบ notification ของสิทธิ์นี้")
+    return {"success": success}
+
+
+@router.put("/notifications/mark-all-read")
+def mark_all_notifications_read(user: dict = Depends(get_current_user)):
+    """ทำเครื่องหมายทั้งหมดเป็นอ่านแล้ว"""
+    role = user.get("role", "dispatcher")
+    count = mark_all_read(target_role=role)
+    return {"marked_count": count}

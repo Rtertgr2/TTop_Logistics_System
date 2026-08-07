@@ -9,4 +9,14 @@ googlemaps
 ortools
 openpyxl
 requests
+sqlalchemy
+psycopg2-binary
+alembic
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt==4.0.1
+redis
+celery[redis]
+flower
+prometheus_client
 pytest

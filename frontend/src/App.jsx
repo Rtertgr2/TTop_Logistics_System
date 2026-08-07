@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Sidebar from './components/Sidebar'
 import Dashboard from './components/Dashboard'
 import FileUpload from './components/FileUpload'
@@ -6,6 +6,12 @@ import RouteResult from './components/RouteResult'
 import MapView from './components/MapView'
 import VehicleManager from './components/VehicleManager'
 import DatabaseViewer from './components/DatabaseViewer'
+import DriverMobile from './components/DriverMobile'
+import LoadBalancer from './components/LoadBalancer'
+import AdminDashboard from './components/AdminDashboard'
+import LoginScreen from './components/LoginScreen'
+import BookingDashboard from './components/BookingDashboard'
+import { getToken, setToken, logout } from './api'
 
 function App() {
   const [currentPage, setCurrentPage] = useState('dashboard')
@@ -13,6 +19,48 @@ function App() {
   const [routes, setRoutes] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [user, setUser] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
+  const [deferredInfo, setDeferredInfo] = useState(null)
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setToken(null)
+      setUser(null)
+      setCurrentPage('dashboard')
+    }
+    window.addEventListener('auth:unauthorized', handleUnauthorized)
+    window.addEventListener('auth:logout', handleUnauthorized)
+    return () => {
+      window.removeEventListener('auth:unauthorized', handleUnauthorized)
+      window.removeEventListener('auth:logout', handleUnauthorized)
+    }
+  }, [])
+
+  // Restore session from stored token on page load
+  useEffect(() => {
+    const restoreSession = async () => {
+      if (!getToken()) {
+        setAuthChecked(true)
+        return
+      }
+      try {
+        const res = await fetch('/api/v1/auth/me')
+        if (res.ok) {
+          const data = await res.json()
+          setUser(data.user)
+        } else if (res.status === 401 || res.status === 403) {
+          setToken(null)
+        }
+        // network/other errors: keep token, user can retry
+      } catch {
+        // network error — don't clear token, just let user re-login manually
+      } finally {
+        setAuthChecked(true)
+      }
+    }
+    restoreSession()
+  }, [])
 
   // 🔄 โหลดข้อมูลของวันปัจจุบันจาก Database อัตโนมัติเมื่อรีเฟรชหน้าเว็บ (ตัดรอบเที่ยงคืน)
   useEffect(() => {
@@ -22,8 +70,8 @@ function App() {
   const fetchTodayData = async () => {
     try {
       const [resOrders, resRoutes] = await Promise.all([
-        fetch('/api/orders/today'),
-        fetch('/api/routes/today')
+        fetch('/api/v1/orders/today'),
+        fetch('/api/v1/routes/today')
       ])
       if (resOrders.ok) {
         const dataOrders = await resOrders.json()
@@ -38,7 +86,7 @@ function App() {
         }
       }
     } catch (err) {
-      console.error('Error auto-restoring today state:', err)
+      // Silent fail for auto-restore
     }
   }
 
@@ -46,10 +94,13 @@ function App() {
   const [selectedZoneFilter, setSelectedZoneFilter] = useState('ALL')
 
   // Extract unique zones for filtering
-  const availableZones = Array.from(new Set(orders.map(o => o.zone || 'ไม่ระบุ').filter(Boolean)))
+  const availableZones = useMemo(
+    () => Array.from(new Set(orders.map(o => o.zone || 'ไม่ระบุ').filter(Boolean))),
+    [orders]
+  )
 
   // Filtered orders calculation
-  const filteredOrders = orders.filter(order => {
+  const filteredOrders = useMemo(() => orders.filter(order => {
     const q = searchQuery.toLowerCase().trim()
     const matchesSearch = !q || (
       (order.customer || '').toLowerCase().includes(q) ||
@@ -62,12 +113,14 @@ function App() {
     const matchesZone = selectedZoneFilter === 'ALL' || (order.zone === selectedZoneFilter)
 
     return matchesSearch && matchesZone
-  })
+  }), [orders, searchQuery, selectedZoneFilter])
 
-  const totalFilteredWeight = filteredOrders.reduce((sum, o) => sum + (o.weight || 0), 0)
+  const totalFilteredWeight = useMemo(
+    () => filteredOrders.reduce((sum, o) => sum + (o.weight || 0), 0),
+    [filteredOrders]
+  )
 
   const handleUploadSuccess = (data) => {
-    console.log('Upload response:', data)
     setOrders(data.orders)
     setError(null)
     setCurrentPage('orders')
@@ -77,7 +130,7 @@ function App() {
     setLoading(true)
     setError(null)
     try {
-      const response = await fetch('/api/plan-routes', {
+      const response = await fetch('/api/v1/plan-routes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ orders })
@@ -90,34 +143,77 @@ function App() {
 
       const data = await response.json()
       setRoutes(data.routes)
+      setDeferredInfo(
+        data.deferred_count > 0
+          ? {
+              orders: data.deferred_orders || [],
+              weight: data.deferred_weight || 0,
+              count: data.deferred_count || 0,
+            }
+          : null
+      )
       setCurrentPage('routes')
     } catch (err) {
-      console.error('Plan routes error:', err)
       setError(err.message || 'เกิดข้อผิดพลาดในการคำนวณเส้นทาง')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleSendEmail = async (routesToSend, recipient) => {
+  const handleSendLineNotification = async (routesToSend) => {
     try {
-      const response = await fetch('/api/send-email', {
+      const response = await fetch('/api/v1/send-line-notification', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ routes: routesToSend, recipient })
+        body: JSON.stringify({ routes: routesToSend })
       })
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}))
-        throw new Error(errData.detail || 'ส่ง email ไม่สำเร็จ')
+        throw new Error(errData.detail || 'ส่ง LINE notification ไม่สำเร็จ')
       }
 
       const data = await response.json()
       return data
     } catch (err) {
-      console.error('Send email error:', err)
       throw err
     }
+  }
+
+  const handleSendDriverNotification = async (route, driverLineUserId) => {
+    try {
+      const response = await fetch('/api/v1/send-driver-notification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ route, driver_line_user_id: driverLineUserId })
+      })
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        throw new Error(errData.detail || 'ส่ง LINE ให้คนขับไม่สำเร็จ')
+      }
+
+      const data = await response.json()
+      return data
+    } catch (err) {
+      throw err
+    }
+  }
+
+  const handleLocationVerified = (orderId, lat, lng) => {
+    setOrders(prev => prev.map(o =>
+      o.id === orderId
+        ? { ...o, lat, lng, verified_lat: lat, verified_lng: lng, is_verified: true }
+        : o
+    ))
+    setRoutes(prev => prev.map(r => ({
+      ...r,
+      stops: (r.stops || []).map(s =>
+        (s.id === orderId || s.order_id === orderId)
+          ? { ...s, lat, lng, verified_lat: lat, verified_lng: lng, is_verified: true }
+          : s
+      )
+    })))
   }
 
   const renderPage = () => {
@@ -128,6 +224,7 @@ function App() {
             orders={orders}
             routes={routes}
             onNavigate={setCurrentPage}
+            onClearData={handleClearData}
           />
         )
       case 'upload':
@@ -140,22 +237,44 @@ function App() {
                 <h2>รายการสั่งซื้อ ({orders.length} รายการ)</h2>
                 <small className="sub-title-desc">ค้นหา กรองโซน และตรวจสอบรายละเอียดออเดอร์</small>
               </div>
-              {orders.length > 0 && (
-                <button
-                  className="btn-primary"
-                  onClick={handlePlanRoutes}
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <>
-                      <span className="spinner"></span>
-                      กำลังคำนวณ...
-                    </>
-                  ) : (
-                    '🚀 คำนวณเส้นทาง'
-                  )}
-                </button>
-              )}
+              <div style={{ display: 'flex', gap: '10px' }}>
+                {orders.length > 0 && (
+                  <>
+                    <button
+                      className="btn-danger-outline"
+                      onClick={handleClearData}
+                      style={{
+                        padding: '10px 16px',
+                        background: '#fff1f2',
+                        color: '#e11d48',
+                        border: '1px solid #fecdd3',
+                        borderRadius: '10px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      🗑️ ล้างข้อมูล
+                    </button>
+                    <button
+                      className="btn-primary"
+                      onClick={handlePlanRoutes}
+                      disabled={loading}
+                    >
+                      {loading ? (
+                        <>
+                          <span className="spinner"></span>
+                          กำลังคำนวณ...
+                        </>
+                      ) : (
+                        '🚀 คำนวณเส้นทาง'
+                      )}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             {error && (
@@ -268,7 +387,7 @@ function App() {
                       ))}
                     </div>
                     <div className="orders-map">
-                      <MapView orders={filteredOrders} routes={routes} />
+                      <MapView orders={filteredOrders} routes={routes} onVerified={handleLocationVerified} />
                     </div>
                   </div>
                 )}
@@ -279,11 +398,11 @@ function App() {
       case 'routes':
         return (
           <div className="page-container">
-            <RouteResult routes={routes} onSendEmail={handleSendEmail} />
+            <RouteResult routes={routes} deferredInfo={deferredInfo} onSendLine={handleSendLineNotification} onSendDriverLine={handleSendDriverNotification} />
             {routes.length > 0 && (
               <div className="routes-map-container">
                 <h3>🗺️ แผนที่เส้นทางจัดส่งสินค้า</h3>
-                <MapView orders={orders} routes={routes} />
+                <MapView orders={orders} routes={routes} onVerified={handleLocationVerified} />
               </div>
             )}
           </div>
@@ -292,12 +411,21 @@ function App() {
         return <VehicleManager />
       case 'database':
         return <DatabaseViewer onClearData={handleClearData} />
+      case 'driver':
+        return <DriverMobile />
+      case 'load-balance':
+        return <LoadBalancer />
+      case 'booking':
+        return <BookingDashboard />
+      case 'admin':
+        return <AdminDashboard />
       default:
         return (
           <Dashboard
             orders={orders}
             routes={routes}
             onNavigate={setCurrentPage}
+            onClearData={handleClearData}
           />
         )
     }
@@ -306,22 +434,51 @@ function App() {
   const handleClearData = async () => {
     if (window.confirm('⚠️ คุณแน่ใจหรือไม่ว่าต้องการล้างข้อมูลออเดอร์ แผนจัดส่ง และ Fleet ทั้งหมดในระบบ?')) {
       try {
-        await fetch('/api/clear-data', { method: 'POST' })
+        const res = await fetch('/api/v1/clear-data', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirm: 'CLEAR_ALL_DATA' })
+        })
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}))
+          throw new Error(errData.detail || `Server error: ${res.status}`)
+        }
         setOrders([])
         setRoutes([])
+        setDeferredInfo(null)
         setError(null)
         alert('🎉 ล้างข้อมูลทั้งหมดในระบบเรียบร้อยแล้ว!')
         setCurrentPage('upload')
       } catch (err) {
-        console.error('Failed to clear data:', err)
-        alert('⚠️ ไม่สามารถล้างข้อมูลได้')
+        alert(`⚠️ ไม่สามารถล้างข้อมูลได้: ${err.message}`)
       }
     }
   }
 
+  const handleLoginSuccess = (data) => {
+    setToken(data.access_token)
+    setUser(data.user)
+    setCurrentPage('dashboard')
+  }
+
+  if (!authChecked) {
+    return (
+      <div className="login-container">
+        <div className="login-card">
+          <div className="spinner"></div>
+          <p>กำลังโหลด...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <LoginScreen onLoginSuccess={handleLoginSuccess} />
+  }
+
   return (
     <div className="app-layout">
-      <Sidebar currentPage={currentPage} onNavigate={setCurrentPage} onClearData={handleClearData} />
+      <Sidebar currentPage={currentPage} onNavigate={setCurrentPage} onClearData={handleClearData} user={user} onLogout={logout} />
       <main className="main-content">{renderPage()}</main>
     </div>
   )

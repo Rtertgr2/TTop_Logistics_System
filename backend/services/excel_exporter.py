@@ -118,6 +118,63 @@ def generate_all_routes_manifest_excel(routes: list[dict]) -> bytes:
                 if c_idx in [1, 2, 5, 6]:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
 
+        # เพิ่ม Sheet สำหรับรายละเอียดสินค้า (OrderItem Details)
+        detail_sheet_title = f"รายละเอียดสินค้า ({r.get('plate', 'คิวงาน')})"[:30]
+        ws_detail = wb.create_sheet(title=detail_sheet_title)
+        ws_detail.views.sheetView[0].showGridLines = True
+        
+        # Detail Title
+        ws_detail.cell(row=1, column=1, value=f"📦 รายละเอียดสินค้า — {v_name} (ทะเบียน {r.get('plate', '-')})").font = Font(name="Cordia New", size=18, bold=True, color="1E3A8A")
+        ws_detail.cell(row=2, column=1, value=f"น้ำหนักรวม: {r.get('total_weight', 0)} kg").font = sub_font
+
+        # Detail Headers
+        detail_headers = ["ลำดับ", "เลขที่ SO", "ชื่อลูกค้า", "รหัสสินค้า", "ชื่อสินค้า", "จำนวน", "หน่วย", "น้ำหนักต่อหน่วย (kg)", "น้ำหนักรวม (kg)"]
+        ws_detail.append([]) # Row 3
+        
+        ws_detail.row_dimensions[4].height = 26
+        for c_idx, h_text in enumerate(detail_headers, 1):
+            cell = ws_detail.cell(row=4, column=c_idx, value=h_text)
+            cell.font = table_header_font
+            cell.fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = cell_border
+
+        # Detail Data Rows
+        detail_row = 5
+        for s_idx, stop in enumerate(stops, 1):
+            products = stop.get("products", [])
+            if not products:
+                # ถ้าไม่มี products ให้แสดงแค่ order info
+                ws_detail.cell(row=detail_row, column=1, value=s_idx).font = Font(name="Cordia New", size=13)
+                ws_detail.cell(row=detail_row, column=2, value=stop.get("order_number", "-")).font = Font(name="Cordia New", size=13)
+                ws_detail.cell(row=detail_row, column=3, value=stop.get("customer", "-")).font = Font(name="Cordia New", size=13)
+                ws_detail.cell(row=detail_row, column=4, value="-").font = Font(name="Cordia New", size=13)
+                ws_detail.cell(row=detail_row, column=5, value="-").font = Font(name="Cordia New", size=13)
+                ws_detail.cell(row=detail_row, column=6, value=0).font = Font(name="Cordia New", size=13)
+                ws_detail.cell(row=detail_row, column=7, value="-").font = Font(name="Cordia New", size=13)
+                ws_detail.cell(row=detail_row, column=8, value=0).font = Font(name="Cordia New", size=13)
+                ws_detail.cell(row=detail_row, column=9, value=stop.get("weight", 0)).font = Font(name="Cordia New", size=13)
+                detail_row += 1
+            else:
+                # แสดงแต่ละ product ใน order
+                for p_idx, product in enumerate(products):
+                    ws_detail.cell(row=detail_row, column=1, value=s_idx if p_idx == 0 else "").font = Font(name="Cordia New", size=13)
+                    ws_detail.cell(row=detail_row, column=2, value=stop.get("order_number", "-") if p_idx == 0 else "").font = Font(name="Cordia New", size=13)
+                    ws_detail.cell(row=detail_row, column=3, value=stop.get("customer", "-") if p_idx == 0 else "").font = Font(name="Cordia New", size=13)
+                    ws_detail.cell(row=detail_row, column=4, value=product.get("code", "-")).font = Font(name="Cordia New", size=13)
+                    ws_detail.cell(row=detail_row, column=5, value=product.get("name", "-")).font = Font(name="Cordia New", size=13)
+                    ws_detail.cell(row=detail_row, column=6, value=product.get("quantity", 0)).font = Font(name="Cordia New", size=13)
+                    ws_detail.cell(row=detail_row, column=7, value=product.get("unit", "-")).font = Font(name="Cordia New", size=13)
+                    ws_detail.cell(row=detail_row, column=8, value=product.get("product_weight", 0)).font = Font(name="Cordia New", size=13)
+                    ws_detail.cell(row=detail_row, column=9, value=product.get("item_weight", 0)).font = Font(name="Cordia New", size=13)
+                    detail_row += 1
+        
+        # Auto column width for detail sheet
+        for col in ws_detail.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws_detail.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
         # Auto column width adjustment
         for col in ws.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)

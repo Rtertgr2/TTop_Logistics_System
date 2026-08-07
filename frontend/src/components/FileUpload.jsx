@@ -9,6 +9,9 @@ function FileUpload({ onSuccess }) {
   const [dragActive, setDragActive] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [error, setError] = useState(null)
+  const [missingProducts, setMissingProducts] = useState(null)
+  const [productInputs, setProductInputs] = useState([])
+  const [savingProducts, setSavingProducts] = useState(false)
 
   const handleDrag = (e) => {
     e.preventDefault()
@@ -83,7 +86,7 @@ function FileUpload({ onSuccess }) {
     })
 
     try {
-      const response = await axios.post('/api/upload-multiple', formData, {
+      const response = await axios.post('/api/v1/upload-multiple', formData, {
         onUploadProgress: (progressEvent) => {
           const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
           setUploadProgress(percent)
@@ -92,12 +95,80 @@ function FileUpload({ onSuccess }) {
       onSuccess(response.data)
     } catch (error) {
       console.error('Upload failed:', error)
-      const message = error.response?.data?.detail || error.message || 'เกิดข้อผิดพลาดในการอัปโหลด'
-      setError(message)
+      const errorData = error.response?.data?.detail
+      
+      // ตรวจสอบว่าเป็น error จาก Product table หรือไม่
+      if (errorData && typeof errorData === 'object' && errorData.missing_products) {
+        // แสดง modal สำหรับกรอกน้ำหนักสินค้า
+        setMissingProducts(errorData)
+        setProductInputs(errorData.missing_products.map(name => ({
+          name: name,
+          code: name.split(' - ')[0] || '',
+          weight: '',
+          unit: 'กล่อง'
+        })))
+      } else {
+        const message = errorData || error.message || 'เกิดข้อผิดพลาดในการอัปโหลด'
+        setError(message)
+      }
     } finally {
       setLoading(false)
       setUploadProgress(0)
     }
+  }
+
+  const handleProductInputChange = (index, field, value) => {
+    setProductInputs(prev => prev.map((item, i) => 
+      i === index ? { ...item, [field]: value } : item
+    ))
+  }
+
+  const handleSaveProducts = async () => {
+    setSavingProducts(true)
+    try {
+      const token = localStorage.getItem('token')
+      const productsToSave = productInputs.filter(p => p.weight && parseFloat(p.weight) > 0)
+      
+      if (productsToSave.length === 0) {
+        setError('กรุณากรอกน้ำหนักอย่างน้อย 1 รายการ')
+        return
+      }
+
+      await axios.post('/api/v1/products/bulk-create', {
+        products: productsToSave.map(p => ({
+          product_code: p.code,
+          product_name: p.name,
+          weight: parseFloat(p.weight),
+          unit: p.unit
+        }))
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+
+      // ปิด modal และลอง upload ใหม่
+      setMissingProducts(null)
+      setProductInputs([])
+      setError(null)
+      
+      // ลอง upload ใหม่
+      handleSubmit(new Event('submit'))
+    } catch (err) {
+      console.error('Save products failed:', err)
+      setError('ไม่สามารถบันทึกสินค้าได้: ' + (err.response?.data?.detail || err.message))
+    } finally {
+      setSavingProducts(false)
+    }
+  }
+
+  const handleSkipProducts = () => {
+    setMissingProducts(null)
+    setProductInputs([])
+    setError('ข้ามการบันทึกสินค้า — กรุณาเพิ่มสินค้าในระบบก่อนอัปโหลดใหม่')
+  }
+
+  const handleCloseModal = () => {
+    setMissingProducts(null)
+    setProductInputs([])
   }
 
   return (
@@ -111,6 +182,194 @@ function FileUpload({ onSuccess }) {
         <div className="error-banner">
           <span>⚠️ {error}</span>
           <button onClick={() => setError(null)}>✕</button>
+        </div>
+      )}
+
+      {/* Modal สำหรับกรอกน้ำหนักสินค้าที่ไม่เจอ */}
+      {missingProducts && (
+        <div className="modal-overlay" style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000
+        }}>
+          <div className="modal-content" style={{
+            backgroundColor: 'white',
+            borderRadius: '12px',
+            padding: '24px',
+            maxWidth: '600px',
+            width: '90%',
+            maxHeight: '80vh',
+            overflow: 'auto',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.15)'
+          }}>
+            <div className="modal-header" style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '20px',
+              borderBottom: '1px solid #e5e7eb',
+              paddingBottom: '12px'
+            }}>
+              <h3 style={{ margin: 0, color: '#1f2937' }}>⚠️ พบสินค้าที่ไม่มีในระบบ</h3>
+              <button 
+                onClick={handleCloseModal}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: '#6b7280'
+                }}
+              >✕</button>
+            </div>
+            
+            <div className="modal-body">
+              <p style={{ marginBottom: '16px', color: '#4b5563' }}>
+                พบสินค้า {missingProducts.missing_products.length} รายการที่ไม่มีในระบบ 
+                กรุณากรอกน้ำหนักต่อหน่วย (kg) เพื่อบันทึกเข้าระบบ
+              </p>
+              
+              <div className="product-input-list" style={{ marginBottom: '20px' }}>
+                {productInputs.map((product, index) => (
+                  <div key={index} style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr 100px 80px',
+                    gap: '12px',
+                    padding: '12px',
+                    backgroundColor: '#f9fafb',
+                    borderRadius: '8px',
+                    marginBottom: '8px',
+                    alignItems: 'center'
+                  }}>
+                    <div>
+                      <label style={{ fontSize: '12px', color: '#6b7280', display: 'block', marginBottom: '4px' }}>
+                        รหัสสินค้า
+                      </label>
+                      <input
+                        type="text"
+                        value={product.code}
+                        onChange={(e) => handleProductInputChange(index, 'code', e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '8px',
+                          border: '1px solid #d1d5db',
+                          borderRadius: '6px',
+                          fontSize: '14px'
+                        }}
+                        placeholder="รหัสสินค้า"
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '12px', color: '#6b7280', display: 'block', marginBottom: '4px' }}>
+                        ชื่อสินค้า
+                      </label>
+                      <input
+                        type="text"
+                        value={product.name}
+                        onChange={(e) => handleProductInputChange(index, 'name', e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '8px',
+                          border: '1px solid #d1d5db',
+                          borderRadius: '6px',
+                          fontSize: '14px'
+                        }}
+                        placeholder="ชื่อสินค้า"
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '12px', color: '#6b7280', display: 'block', marginBottom: '4px' }}>
+                        น้ำหนัก (kg)
+                      </label>
+                      <input
+                        type="number"
+                        value={product.weight}
+                        onChange={(e) => handleProductInputChange(index, 'weight', e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '8px',
+                          border: '1px solid #d1d5db',
+                          borderRadius: '6px',
+                          fontSize: '14px'
+                        }}
+                        placeholder="0.0"
+                        min="0"
+                        step="0.1"
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '12px', color: '#6b7280', display: 'block', marginBottom: '4px' }}>
+                        หน่วย
+                      </label>
+                      <select
+                        value={product.unit}
+                        onChange={(e) => handleProductInputChange(index, 'unit', e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '8px',
+                          border: '1px solid #d1d5db',
+                          borderRadius: '6px',
+                          fontSize: '14px'
+                        }}
+                      >
+                        <option value="กล่อง">กล่อง</option>
+                        <option value="ชิ้น">ชิ้น</option>
+                        <option value="ถุง">ถุง</option>
+                        <option value="แพ็ค">แพ็ค</option>
+                        <option value="กิโลกรัม">กิโลกรัม</option>
+                      </select>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              <div className="modal-actions" style={{
+                display: 'flex',
+                gap: '12px',
+                justifyContent: 'flex-end',
+                borderTop: '1px solid #e5e7eb',
+                paddingTop: '16px'
+              }}>
+                <button
+                  onClick={handleSkipProducts}
+                  style={{
+                    padding: '10px 20px',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '8px',
+                    backgroundColor: 'white',
+                    color: '#374151',
+                    cursor: 'pointer',
+                    fontSize: '14px'
+                  }}
+                >
+                  ข้าม
+                </button>
+                <button
+                  onClick={handleSaveProducts}
+                  disabled={savingProducts}
+                  style={{
+                    padding: '10px 20px',
+                    border: 'none',
+                    borderRadius: '8px',
+                    backgroundColor: '#3b82f6',
+                    color: 'white',
+                    cursor: savingProducts ? 'not-allowed' : 'pointer',
+                    fontSize: '14px',
+                    opacity: savingProducts ? 0.7 : 1
+                  }}
+                >
+                  {savingProducts ? '⏳ กำลังบันทึก...' : '💾 บันทึกทั้งหมด'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

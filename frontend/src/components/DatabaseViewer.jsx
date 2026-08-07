@@ -18,25 +18,25 @@ function DatabaseViewer({ onClearData }) {
     setLoading(true)
     try {
       if (activeTab === 'orders') {
-        const res = await fetch('/api/orders-history?limit=200')
+        const res = await fetch('/api/v1/orders-history?limit=200')
         if (res.ok) {
           const data = await res.json()
           setOrders(data.orders || [])
         }
       } else if (activeTab === 'memories') {
-        const res = await fetch('/api/customer-locations?limit=200')
+        const res = await fetch('/api/v1/customer-locations?limit=200')
         if (res.ok) {
           const data = await res.json()
           setMemories(data.locations || [])
         }
       } else if (activeTab === 'history') {
-        const res = await fetch('/api/history?limit=100')
+        const res = await fetch('/api/v1/history?limit=100')
         if (res.ok) {
           const data = await res.json()
           setHistory(data.history || [])
         }
       } else if (activeTab === 'vehicles') {
-        const res = await fetch('/api/vehicles')
+        const res = await fetch('/api/v1/vehicles')
         if (res.ok) {
           const data = await res.json()
           setVehicles(data.vehicles || [])
@@ -52,7 +52,7 @@ function DatabaseViewer({ onClearData }) {
   const handleDeleteMemory = async (id, custKey) => {
     if (!window.confirm(`คุณต้องการลบพิกัดความจำของ "${custKey}" ใช่หรือไม่?`)) return
     try {
-      const res = await fetch(`/api/customer-locations/${id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/v1/customer-locations/${id}`, { method: 'DELETE' })
       if (res.ok) {
         setMemories(memories.filter(m => m.id !== id))
         alert('🗑️ ลบพิกัดความจำเรียบร้อยแล้ว')
@@ -69,7 +69,7 @@ function DatabaseViewer({ onClearData }) {
     )
     setVehicles(updatedVehicles)
     try {
-      await fetch('/api/vehicles', {
+      await fetch('/api/v1/vehicles', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedVehicles)
@@ -82,7 +82,7 @@ function DatabaseViewer({ onClearData }) {
   const handleDeleteVehicleInDB = async (vehicleId, vehicleName) => {
     if (!window.confirm(`คุณต้องการลบ "${vehicleName}" ออกจากฐานข้อมูลใช่หรือไม่?`)) return
     try {
-      const res = await fetch(`/api/vehicles/${vehicleId}`, { method: 'DELETE' })
+      const res = await fetch(`/api/v1/vehicles/${vehicleId}`, { method: 'DELETE' })
       if (res.ok) {
         const data = await res.json()
         setVehicles(data.vehicles || [])
@@ -135,7 +135,7 @@ function DatabaseViewer({ onClearData }) {
       }}>
         <div>
           <h2 style={{ margin: 0, fontSize: '24px', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '10px' }}>
-            🗄️ คลังจัดการข้อมูล ฐานข้อมูล SQLite (Database Viewer)
+            🗄️ คลังจัดการข้อมูล ฐานข้อมูล PostgreSQL (Database Viewer)
           </h2>
           <p style={{ margin: '6px 0 0 0', opacity: 0.8, fontSize: '14px' }}>
             เรียกดู ค้นหา ตรวจสอบ และบริหารจัดการข้อมูลออเดอร์ พิกัดจดจำถาวร และประวัติการจัดคิวรถ
@@ -351,7 +351,7 @@ function DatabaseViewer({ onClearData }) {
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: '40px', color: '#64748b', fontSize: '16px' }}>
-          ⏳ กำลังดึงข้อมูลจาก Database (SQLite)...
+          ⏳ กำลังดึงข้อมูลจาก Database...
         </div>
       ) : (
         <div style={{ background: 'white', borderRadius: '14px', border: '1px solid #e2e8f0', overflow: 'hidden', boxShadow: '0 4px 6px rgba(0,0,0,0.02)' }}>
@@ -458,7 +458,7 @@ function DatabaseViewer({ onClearData }) {
                         <td style={{ padding: '12px 16px', fontWeight: 700, color: '#0f172a' }}>{m.customer_key}</td>
                         <td style={{ padding: '12px 16px', color: '#475569' }}>{m.formatted_address || '-'}</td>
                         <td style={{ padding: '12px 16px', fontFamily: 'monospace', fontWeight: 700, color: '#10b981' }}>
-                          {m.lat.toFixed(6)}, {m.lng.toFixed(6)}
+                          {m.lat?.toFixed(6) ?? '-'}, {m.lng?.toFixed(6) ?? '-'}
                         </td>
                         <td style={{ padding: '12px 16px', fontWeight: 700, color: '#334155' }}>
                           100%

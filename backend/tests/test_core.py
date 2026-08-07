@@ -93,7 +93,8 @@ class TestRouteOptimizer:
             {"id": 1, "customer": "A", "address": "123", "weight": 10, "lat": 13.8, "lng": 100.5}
         ]
         vehicles = [{"id": 1, "name": "V1", "plate": "กข 1", "capacity": 100, "driver": "A", "active": True}]
-        routes = optimize_routes(orders, vehicles=vehicles)
+        result = optimize_routes(orders, vehicles=vehicles)
+        routes = result["routes"]
         assert len(routes) == 1
         assert len(routes[0]["stops"]) == 1
         assert routes[0]["total_weight"] == 10
@@ -107,21 +108,22 @@ class TestRouteOptimizer:
             {"id": 1, "name": "V1", "plate": "กข 1", "capacity": 100, "driver": "A", "active": True},
             {"id": 2, "name": "V2", "plate": "กข 2", "capacity": 100, "driver": "B", "active": True},
         ]
-        routes = optimize_routes(orders, vehicles=vehicles)
+        result = optimize_routes(orders, vehicles=vehicles)
+        routes = result["routes"]
         total_stops = sum(len(r["stops"]) for r in routes)
         assert total_stops == 2
 
     def test_empty_orders(self):
-        routes = optimize_routes([], vehicles=[])
-        assert routes == []
+        result = optimize_routes([], vehicles=[])
+        assert result["routes"] == []
 
     def test_output_has_required_fields(self):
         orders = [
             {"id": 1, "customer": "A", "address": "123", "weight": 10, "lat": 13.8, "lng": 100.5, "order_number": "SO001", "zone": "กรุงเทพ"},
         ]
         vehicles = [{"id": 1, "name": "V1", "plate": "กข 1", "capacity": 100, "driver": "A", "active": True}]
-        routes = optimize_routes(orders, vehicles=vehicles)
-        route = routes[0]
+        result = optimize_routes(orders, vehicles=vehicles)
+        route = result["routes"][0]
         assert "vehicle_id" in route
         assert "plate" in route
         assert "driver" in route
@@ -181,16 +183,47 @@ class TestPOReferenceExtraction:
 class TestRouteRebalance:
     def test_balanced_distribution(self):
         orders = [
-            {"id": i, "customer": f"C{i}", "address": f"addr {i}", "weight": 1, "lat": 13.7 + i * 0.01, "lng": 100.4 + i * 0.01}
+            {"id": i, "customer": f"C{i}", "address": f"addr {i}", "weight": 300, "lat": 13.7 + i * 0.01, "lng": 100.4 + i * 0.01}
             for i in range(20)
         ]
         vehicles = [
             {"id": 1, "name": "V1", "plate": "1", "capacity": 3750, "driver": "A", "active": True},
             {"id": 2, "name": "V2", "plate": "2", "capacity": 3750, "driver": "B", "active": True},
         ]
-        routes = optimize_routes(orders, vehicles=vehicles)
+        result = optimize_routes(orders, vehicles=vehicles)
+        routes = result["routes"]
         assert len(routes) == 2
         stops_per = [len(r["stops"]) for r in routes]
         assert sum(stops_per) == 20
         # ทั้ง 2 คันต้องมีจุดส่ง >= 5 (ไม่ใช่ 1 vs 19)
         assert min(stops_per) >= 5
+
+    def test_eta_present(self):
+        orders = [
+            {"id": 1, "customer": "A", "address": "addr 1", "weight": 100, "lat": 13.8, "lng": 100.5},
+            {"id": 2, "customer": "B", "address": "addr 2", "weight": 100, "lat": 13.9, "lng": 100.6},
+        ]
+        vehicles = [
+            {"id": 1, "name": "V1", "plate": "1", "capacity": 3750, "driver": "A", "active": True},
+        ]
+        result = optimize_routes(orders, vehicles=vehicles)
+        routes = result["routes"]
+        assert len(routes) >= 1
+        for route in routes:
+            for stop in route["stops"]:
+                assert "eta" in stop
+                assert "eta_minutes" in stop
+
+    def test_warnings_on_negative_weight(self):
+        orders = [
+            {"id": 1, "customer": "A", "address": "addr 1", "weight": -10, "lat": 13.8, "lng": 100.5},
+        ]
+        vehicles = [
+            {"id": 1, "name": "V1", "plate": "1", "capacity": 3750, "driver": "A", "active": True},
+        ]
+        result = optimize_routes(orders, vehicles=vehicles)
+        assert len(result["warnings"]) > 0
+
+    def test_clustered_flag(self):
+        result = optimize_routes([], vehicles=[])
+        assert result["clustered"] is False

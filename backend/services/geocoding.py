@@ -2,8 +2,6 @@ import logging
 import os
 import re
 import time
-import hashlib
-import json
 import urllib.parse
 import requests
 from dotenv import load_dotenv
@@ -28,11 +26,9 @@ def get_google_maps_api_key() -> str:
     return _CACHED_API_KEY
 
 
-LMSTUDIO_URL = getattr(config, "LMSTUDIO_URL", "http://localhost:1234/v1")
-ENABLE_AI_REFINEMENT = getattr(config, "ENABLE_AI_REFINEMENT", True)
-
 # Cache for online place searches to eliminate redundant network requests
 GEOCODE_CACHE = {}
+_GEOCODE_CACHE_MAX_SIZE = 500
 
 # Thailand Bounding Box (Lat 5.0N - 21.0N, Lon 97.0E - 106.0E)
 THAILAND_BOUNDS = {
@@ -43,11 +39,23 @@ THAILAND_BOUNDS = {
 }
 
 
-def _request_with_retry(url: str, max_retries: int = 3, base_delay: float = 1.0, timeout: float = 3.0) -> requests.Response | None:
+def _mask_url(url: str) -> str:
+    """ตัด query string หรือ mask ตัวแปรมันตราย (เช่น API key) ก่อน log"""
+    try:
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(url)
+        safe = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+        return safe
+    except Exception:
+        return url[:40]
+
+
+def _request_with_retry(url: str, max_retries: int = 3, base_delay: float = 1.0, timeout: float = 3.0, headers: dict = None) -> requests.Response | None:
     """HTTP GET with exponential backoff retry (1.2.8)"""
+    url_safe = _mask_url(url)
     for attempt in range(max_retries):
         try:
-            res = requests.get(url, timeout=timeout)
+            res = requests.get(url, timeout=timeout, headers=headers or {})
             if res.status_code == 429:
                 delay = base_delay * (2 ** attempt)
                 logger.warning(f"Rate limit hit (429), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
@@ -55,7 +63,7 @@ def _request_with_retry(url: str, max_retries: int = 3, base_delay: float = 1.0,
                 continue
             if res.status_code == 200:
                 return res
-            logger.warning(f"HTTP {res.status_code} for {url[:80]}")
+            logger.warning(f"HTTP {res.status_code} for {url_safe}")
             return res
         except requests.exceptions.Timeout:
             delay = base_delay * (2 ** attempt)
@@ -69,7 +77,7 @@ def _request_with_retry(url: str, max_retries: int = 3, base_delay: float = 1.0,
             logger.error(f"Request error: {e}")
             return None
 
-    logger.error(f"All {max_retries} retries exhausted for {url[:80]}")
+    logger.error(f"All {max_retries} retries exhausted for {url_safe}")
     return None
 
 
@@ -102,6 +110,11 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
 
     if address in GEOCODE_CACHE:
         return GEOCODE_CACHE[address]
+
+    # Evict oldest entry if cache is full
+    if len(GEOCODE_CACHE) >= _GEOCODE_CACHE_MAX_SIZE:
+        oldest_key = next(iter(GEOCODE_CACHE))
+        del GEOCODE_CACHE[oldest_key]
 
     # ทำความสะอาดที่อยู่ภาษาไทย
     clean = address.replace('ถ.', 'ถนน').replace('ซ.', 'ซอย ').replace('จ.', 'จังหวัด ')
@@ -201,8 +214,8 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
     # 3. 🗺️ OpenStreetMap Nominatim API (Fallback 2)
     try:
         url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(clean)}&countrycodes=th&limit=1"
-        headers = {'User-Agent': 'LogisticsRoutePlanner/1.0'}
-        res = _request_with_retry(url)
+        nominatim_headers = {'User-Agent': 'LogisticsRoutePlanner/1.0 (logistics@example.com)'}
+        res = _request_with_retry(url, headers=nominatim_headers)
         if res and res.status_code == 200:
             data = res.json()
             if data:
@@ -229,8 +242,8 @@ def reverse_geocode(lat: float, lng: float) -> str:
     if google_key and not google_key.startswith("YOUR_"):
         try:
             url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lng}&key={google_key}&language=th"
-            res = requests.get(url, timeout=3.0)
-            if res.status_code == 200:
+            res = _request_with_retry(url)
+            if res and res.status_code == 200:
                 data = res.json()
                 if data.get("status") == "OK" and data.get("results"):
                     return data["results"][0].get("formatted_address", f"{lat:.6f}, {lng:.6f}")
@@ -240,8 +253,8 @@ def reverse_geocode(lat: float, lng: float) -> str:
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&accept-language=th"
         headers = {'User-Agent': 'LogisticsRoutePlanner/1.0'}
-        res = requests.get(url, headers=headers, timeout=3.0)
-        if res.status_code == 200:
+        res = _request_with_retry(url, headers=headers)
+        if res and res.status_code == 200:
             data = res.json()
             if data and "display_name" in data:
                 return data["display_name"]

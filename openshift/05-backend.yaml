@@ -58,6 +58,11 @@ spec:
                 secretKeyRef:
                   name: logistics-secrets
                   key: LINE_CHANNEL_ACCESS_TOKEN
+            - name: LINE_CHANNEL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: logistics-secrets
+                  key: LINE_CHANNEL_SECRET
             - name: API_KEYS
               valueFrom:
                 secretKeyRef:

@@ -1,9 +1,18 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 
 const vehicleColors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4']
+
+function htmlEscape(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
 
 // Leaflet Map Controller to fly to selected location
 function MapFlyToController({ targetLocation }) {
@@ -22,6 +31,8 @@ function MapFlyToController({ targetLocation }) {
 function createCustomMarkerIcon(color, label, isSelected) {
   const scale = isSelected ? 'scale(1.3)' : 'scale(1)'
   const borderCol = isSelected ? '#fbbf24' : 'white'
+  const safeColor = htmlEscape(color)
+  const safeLabel = htmlEscape(label)
 
   return L.divIcon({
     className: 'custom-leaflet-pin',
@@ -35,7 +46,7 @@ function createCustomMarkerIcon(color, label, isSelected) {
         align-items: center;
       ">
         <div style="
-          background: ${color};
+          background: ${safeColor};
           color: white;
           width: 26px;
           height: 26px;
@@ -53,7 +64,7 @@ function createCustomMarkerIcon(color, label, isSelected) {
             font-weight: 800;
             line-height: 1;
             white-space: nowrap;
-          ">${label}</span>
+          ">${safeLabel}</span>
         </div>
       </div>
     `,
@@ -104,7 +115,7 @@ function roundCoord(val) {
   return Math.round(val * 1000000) / 1000000
 }
 
-function MapView({ routes = [], orders = [], depotLat = 13.781882, depotLng = 100.425041 }) {
+function MapView({ routes = [], orders = [], onVerified = null, depotLat = 13.781882, depotLng = 100.425041 }) {
   const [mapType, setMapType] = useState('standard') // 'standard' or 'satellite'
   const [selectedStop, setSelectedStop] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -125,6 +136,7 @@ function MapView({ routes = [], orders = [], depotLat = 13.781882, depotLng = 10
   const [placeSearchQuery, setPlaceSearchQuery] = useState('')
   const [placeSearchResults, setPlaceSearchResults] = useState([])
   const [isSearchingPlace, setIsSearchingPlace] = useState(false)
+  const searchDebounceRef = useRef(null)
 
   // Update stop coordinates dynamically in React state
   const updateStopLocationInState = (stopItem, newLat, newLng, newAddress = null) => {
@@ -190,7 +202,7 @@ function MapView({ routes = [], orders = [], depotLat = 13.781882, depotLng = 10
     }
     setIsSearchingPlace(true)
     try {
-      const res = await fetch(`/api/search-place?address=${encodeURIComponent(queryStr)}`)
+      const res = await fetch(`/api/v1/search-place?address=${encodeURIComponent(queryStr)}`)
       if (res.ok) {
         const data = await res.json()
         setPlaceSearchResults(data.results || [])
@@ -211,7 +223,7 @@ function MapView({ routes = [], orders = [], depotLat = 13.781882, depotLng = 10
 
     try {
       if (stopItem.id) {
-        await fetch(`/api/orders/${stopItem.id}/verify-location`, {
+        const res = await fetch(`/api/v1/orders/${stopItem.id}/verify-location`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -220,6 +232,9 @@ function MapView({ routes = [], orders = [], depotLat = 13.781882, depotLng = 10
             verified_by: 'user_frontend_map'
           })
         })
+        if (res.ok && onVerified) {
+          onVerified(stopItem.id, latToSave, lngToSave)
+        }
       }
       setSelectedStop({ ...stopItem, lat: latToSave, lng: lngToSave, is_verified: true, confidence_score: 100.0 })
       alert(`💾 บันทึกสถานที่จัดส่งของ "${stopItem.customer}" (Lat: ${latToSave}, Lng: ${lngToSave}) ลงฐานข้อมูลเรียบร้อยแล้ว!`)
@@ -304,9 +319,9 @@ function MapView({ routes = [], orders = [], depotLat = 13.781882, depotLng = 10
     : allStops
 
   const handleOpenGoogleMapsReal = (lat, lng, address) => {
-    if (lat && lng) {
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
       window.open(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`, '_blank')
-    } else {
+    } else if (address) {
       window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`, '_blank')
     }
   }
@@ -399,13 +414,13 @@ function MapView({ routes = [], orders = [], depotLat = 13.781882, depotLng = 10
                       
                       let newAddress = stop.verified_address || stop.address
                       try {
-                        const res = await fetch(`/api/reverse-geocode?lat=${newLat}&lng=${newLng}`)
+                        const res = await fetch(`/api/v1/reverse-geocode?lat=${newLat}&lng=${newLng}`)
                         const data = await res.json()
                         if (data.formatted_address) {
                           newAddress = data.formatted_address
                         }
                         if (stop.id) {
-                          await fetch(`/api/orders/${stop.id}/verify-location`, {
+                          await fetch(`/api/v1/orders/${stop.id}/verify-location`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ lat: newLat, lng: newLng, verified_by: 'user_dragged_pin' })
@@ -547,8 +562,12 @@ function MapView({ routes = [], orders = [], depotLat = 13.781882, depotLng = 10
                           placeholder="พิมพ์ชื่อสถานที่, ร้านค้า, อาคาร หรือถนน..."
                           value={placeSearchQuery}
                           onChange={(e) => {
-                            setPlaceSearchQuery(e.target.value)
-                            handleSearchPlaceOnline(e.target.value)
+                            const val = e.target.value
+                            setPlaceSearchQuery(val)
+                            if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
+                            searchDebounceRef.current = setTimeout(() => {
+                              handleSearchPlaceOnline(val)
+                            }, 300)
                           }}
                         />
                       </div>

@@ -11,19 +11,12 @@ function VehicleManager() {
     fetchVehicles()
   }, [])
 
-  const renumberVehicles = (list) => {
-    return list.map((item, idx) => ({
-      ...item,
-      id: idx + 1
-    }))
-  }
-
   const fetchVehicles = async () => {
     setLoading(true)
     try {
-      const res = await axios.get('/api/vehicles')
+      const res = await axios.get('/api/v1/vehicles')
       const rawList = res.data.vehicles || []
-      setVehicles(renumberVehicles(rawList))
+      setVehicles(rawList)
     } catch (err) {
       console.error('Failed to load vehicles:', err)
       setMessage({ type: 'error', text: 'ไม่สามารถดึงข้อมูลรถขนส่งได้' })
@@ -39,7 +32,8 @@ function VehicleManager() {
   }
 
   const handleAddVehicle = async () => {
-    const newId = vehicles.length + 1
+    const maxId = vehicles.length > 0 ? Math.max(...vehicles.map(v => v.id || 0)) : 0
+    const newId = maxId + 1
     const newVehicle = {
       id: newId,
       name: `รถคันที่ ${newId} (รถบรรทุก 3.5 ตัน)`,
@@ -48,16 +42,16 @@ function VehicleManager() {
       driver: `พนักงานขับรถ ${newId}`,
       active: true
     }
-    const updated = renumberVehicles([...vehicles, newVehicle])
+    const updated = [...vehicles, newVehicle]
     setVehicles(updated)
     
     // Auto-save additions immediately
     try {
-      const res = await axios.put('/api/vehicles', updated)
+      const res = await axios.put('/api/v1/vehicles', updated)
       if (res.data && res.data.vehicles) {
-        setVehicles(renumberVehicles(res.data.vehicles))
+        setVehicles(res.data.vehicles)
       }
-      setMessage({ type: 'success', text: `✨ เพิ่ม "รถคันที่ ${newId}" ลงฐานข้อมูล SQLite เรียบร้อยแล้ว!` })
+      setMessage({ type: 'success', text: `✨ เพิ่ม "รถคันที่ ${newId}" ลงฐานข้อมูลเรียบร้อยแล้ว!` })
     } catch (err) {
       console.error('Auto-save failed:', err)
       setMessage({ type: 'error', text: `⚠️ เกิดข้อผิดพลาดในการบันทึกข้อมูลรถ: ${err.message}` })
@@ -66,21 +60,22 @@ function VehicleManager() {
 
   const handleDuplicateVehicle = async (index) => {
     const target = vehicles[index]
+    const maxId = Math.max(...vehicles.map(v => v.id || 0))
     const duplicated = {
       ...target,
+      id: maxId + 1,
       name: `${target.name || 'รถขนส่ง'} (สำเนา)`,
       plate: `${target.plate || 'กข 0000'}`,
       active: true
     }
     const copyList = [...vehicles]
     copyList.splice(index + 1, 0, duplicated)
-    const updated = renumberVehicles(copyList)
-    setVehicles(updated)
+    setVehicles(copyList)
     
     try {
-      const res = await axios.put('/api/vehicles', updated)
+      const res = await axios.put('/api/v1/vehicles', copyList)
       if (res.data && res.data.vehicles) {
-        setVehicles(renumberVehicles(res.data.vehicles))
+        setVehicles(res.data.vehicles)
       }
       setMessage({ type: 'success', text: `📋 สำเนารถและบันทึกลงฐานข้อมูลเรียบร้อยแล้ว!` })
     } catch (err) {
@@ -93,9 +88,9 @@ function VehicleManager() {
     updated[index].active = !updated[index].active
     setVehicles(updated)
     try {
-      const res = await axios.put('/api/vehicles', updated)
+      const res = await axios.put('/api/v1/vehicles', updated)
       if (res.data && res.data.vehicles) {
-        setVehicles(renumberVehicles(res.data.vehicles))
+        setVehicles(res.data.vehicles)
       }
       setMessage({ type: 'info', text: `อัปเดตสถานะ "${updated[index].name}" เป็น ${updated[index].active ? 'เปิดใช้งาน' : 'ปิดใช้งาน'} ในฐานข้อมูลเรียบร้อยแล้ว` })
     } catch (err) {
@@ -112,13 +107,12 @@ function VehicleManager() {
     const targetName = vehicles[index].name || `คันที่ ${index + 1}`
 
     const filtered = vehicles.filter((_, idx) => idx !== index)
-    const updated = renumberVehicles(filtered)
-    setVehicles(updated)
+    setVehicles(filtered)
 
     try {
-      const res = await axios.put('/api/vehicles', updated)
+      const res = await axios.put('/api/v1/vehicles', filtered)
       if (res.data && res.data.vehicles) {
-        setVehicles(renumberVehicles(res.data.vehicles))
+        setVehicles(res.data.vehicles)
       }
       setMessage({ type: 'success', text: `🗑️ ลบ "${targetName}" ออกจากฐานข้อมูลเรียบร้อยแล้ว!` })
     } catch (err) {
@@ -132,10 +126,8 @@ function VehicleManager() {
     setSaving(true)
     setMessage(null)
     try {
-      const updated = renumberVehicles(vehicles)
-      await axios.put('/api/vehicles', updated)
-      setVehicles(updated)
-      setMessage({ type: 'success', text: '🎉 บันทึกและเรียงลำดับ Fleet รถขนส่ง 1, 2, 3... เรียบร้อยแล้ว!' })
+      await axios.put('/api/v1/vehicles', vehicles)
+      setMessage({ type: 'success', text: '🎉 บันทึก Fleet รถขนส่งเรียบร้อยแล้ว!' })
     } catch (err) {
       console.error('Failed to save vehicles:', err)
       setMessage({ type: 'error', text: '⚠️ เกิดข้อผิดพลาดในการบันทึกข้อมูลรถ' })
@@ -183,6 +175,12 @@ function VehicleManager() {
       {message && (
         <div className={`status-banner ${message.type}`}>
           {message.text}
+        </div>
+      )}
+
+      {vehicles.length === 0 && (
+        <div className="empty-state" style={{ padding: '24px', textAlign: 'center', color: '#64748b', background: '#f8fafc', borderRadius: '8px', marginBottom: '16px' }}>
+          ยังไม่มีข้อมูลรถ — กรอกข้อมูลด้านล่างแล้วกด "บันทึก" เพื่อเพิ่มรถ
         </div>
       )}
 
@@ -281,16 +279,73 @@ function VehicleManager() {
             </div>
 
             <div className="form-group">
+              <label>LINE User ID (สำหรับส่งลิงค์แมพเข้า LINE):</label>
+              <input
+                type="text"
+                value={v.line_user_id || ''}
+                onChange={(e) => handleInputChange(idx, 'line_user_id', e.target.value)}
+                placeholder="เช่น U4a5b6c7d8... (คัดลอกจาก LINE Developers)"
+              />
+              <small className="help-text">
+                คนขับต้อง add LINE OA นี้เป็นเพื่อนก่อน จึงจะรับข้อความได้
+              </small>
+            </div>
+
+            <div className="form-group">
               <label>น้ำหนักบรรทุกสูงสุด (กิโลกรัม / kg):</label>
               <input
                 type="number"
-                value={v.capacity || 3750}
-                onChange={(e) => handleInputChange(idx, 'capacity', parseFloat(e.target.value) || 0)}
+                min="0"
+                value={v.capacity === '' || v.capacity == null ? '' : v.capacity}
+                onChange={(e) => handleInputChange(idx, 'capacity', e.target.value === '' ? '' : parseFloat(e.target.value))}
                 placeholder="3750"
               />
               <small className="help-text">
-                = {((v.capacity || 0) / 1000).toFixed(2)} ตัน
+                = {(((v.capacity === '' ? 0 : v.capacity) || 0) / 1000).toFixed(2)} ตัน
               </small>
+            </div>
+
+            <div className="form-grid-3">
+              <div className="form-group">
+                <label>ปริมาตรสูงสุด (ลบ.ม. / CBM):</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={v.max_volume_cbm === '' || v.max_volume_cbm == null ? '' : v.max_volume_cbm}
+                  onChange={(e) => handleInputChange(idx, 'max_volume_cbm', e.target.value === '' ? '' : parseFloat(e.target.value))}
+                  placeholder="0"
+                />
+                <small className="help-text">
+                  0 = ไม่จำกัด
+                </small>
+              </div>
+              <div className="form-group">
+                <label>จำนวนกล่องสูงสุด:</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={v.max_boxes === '' || v.max_boxes == null ? '' : v.max_boxes}
+                  onChange={(e) => handleInputChange(idx, 'max_boxes', e.target.value === '' ? '' : parseInt(e.target.value))}
+                  placeholder="0"
+                />
+                <small className="help-text">
+                  0 = ไม่จำกัด
+                </small>
+              </div>
+              <div className="form-group">
+                <label>จำนวนจุดส่งสูงสุด:</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={v.max_stops === '' || v.max_stops == null ? '' : v.max_stops}
+                  onChange={(e) => handleInputChange(idx, 'max_stops', e.target.value === '' ? '' : parseInt(e.target.value))}
+                  placeholder="0"
+                />
+                <small className="help-text">
+                  0 = ไม่จำกัด
+                </small>
+              </div>
             </div>
           </div>
         ))}

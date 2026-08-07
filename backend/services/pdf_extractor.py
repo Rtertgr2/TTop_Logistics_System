@@ -5,17 +5,78 @@ import io
 import os
 import re
 import json
-import requests
 import unicodedata
 import logging
 from datetime import datetime
 
-import config
-
-LMSTUDIO_URL = getattr(config, "LMSTUDIO_URL", "http://localhost:1234/v1")
-ENABLE_AI_REFINEMENT = getattr(config, "ENABLE_AI_REFINEMENT", True)
-
 logger = logging.getLogger(__name__)
+
+
+def _lookup_product_weights(products: list[dict]) -> tuple[list[dict], list[str]]:
+    """
+    ค้นหาน้ำหนักสินค้าจาก Product table
+    
+    Returns:
+        tuple: (products_with_weights, missing_products)
+            - products_with_weights: list of products with item_weight calculated
+            - missing_products: list of product codes/names that were not found
+    """
+    from database.db import SessionLocal
+    from database.models import Product
+
+    def _norm(s: str) -> str:
+        # ลบช่องว่าง/ขีดเพื่อเทียบชื่อแบบยืดหยุ่น (เช่น "MATE - จืด" ↔ "MATE จืด")
+        return re.sub(r'[\s\-_]+', ' ', s.strip().lower())
+
+    db = SessionLocal()
+    try:
+        # โหลดสินค้าทั้งหมดจาก Product table (cache ใน memory)
+        all_products = db.query(Product).all()
+        product_map = {}
+        for p in all_products:
+            # เก็บทั้ง product_code และ product_name เป็น key
+            product_map[_norm(p.product_code)] = p
+            product_map[_norm(p.product_name)] = p
+        
+        products_with_weights = []
+        missing_products = []
+        
+        for item in products:
+            code = item.get('code', '').strip()
+            name = item.get('name', '').strip()
+            quantity = item.get('quantity', 0)
+            
+            # ค้นหาด้วย product_code ก่อน
+            found = None
+            if code:
+                found = product_map.get(_norm(code))
+            
+            # ถ้าไม่เจอ ค้นหาด้วย product_name
+            if not found and name:
+                found = product_map.get(_norm(name))
+            
+            if found:
+                # คำนวณน้ำหนักรวม = จำนวน × น้ำหนักต่อหน่วย
+                item_weight = quantity * found.weight
+                products_with_weights.append({
+                    **item,
+                    'item_weight': item_weight,
+                    'product_weight': found.weight
+                })
+            else:
+                # ไม่เจอสินค้าใน Product table
+                missing_products.append(f"{code} - {name}" if code else name)
+                products_with_weights.append({
+                    **item,
+                    'item_weight': 0,
+                    'product_weight': 0
+                })
+        
+        return products_with_weights, missing_products
+        
+    finally:
+        db.close()
+
 
 # ── Template Config Loader (1.1.11) ──────────────────────────────
 _templates_cache = None
@@ -45,8 +106,8 @@ def _load_templates() -> dict:
 
 def _get_template(filename: str) -> dict:
     """เลือก template ที่เหมาะสมตามชื่อไฟล์ (1.1.11)"""
-    config = _load_templates()
-    templates = config.get("templates", {})
+    template_config = _load_templates()
+    templates = template_config.get("templates", {})
 
     # ถ้ามี template เดียว ใช้เลย
     if len(templates) == 1:
@@ -59,7 +120,7 @@ def _get_template(filename: str) -> dict:
             return tpl
 
     # ใช้ default
-    default_key = config.get("default_template", "express_erp")
+    default_key = template_config.get("default_template", "express_erp")
     return templates.get(default_key, {})
 
 
@@ -67,11 +128,25 @@ def _get_template(filename: str) -> dict:
 BACKUP_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "op_backups")
 
 
+def _sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent path traversal and unsafe characters"""
+    # Strip path components
+    safe = os.path.basename(filename)
+    # Remove non-safe characters (keep alphanumeric, dash, underscore, dot)
+    safe = re.sub(r'[^\w\-.]', '_', safe)
+    # Remove leading dots (hidden files)
+    safe = safe.lstrip('.')
+    if not safe:
+        safe = "unnamed.pdf"
+    return safe
+
+
 def _backup_pdf(pdf_content: bytes, filename: str) -> str | None:
     """เก็บไฟล์ PDF ต้นฉบับเป็น Backup (1.1.10)"""
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
-        backup_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
+        safe_name = _sanitize_filename(filename)
+        backup_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
         backup_path = os.path.join(BACKUP_DIR, backup_name)
         with open(backup_path, "wb") as f:
             f.write(pdf_content)
@@ -227,7 +302,7 @@ def clean_text(text: str) -> str:
     return '\n'.join(cleaned_lines)
 
 
-def extract_pdf(pdf_content: bytes, filename: str = "unknown.pdf", use_ai: bool = True) -> list[dict]:
+def extract_pdf(pdf_content: bytes, filename: str = "unknown.pdf") -> list[dict]:
     """สกัดข้อมูลรายการสั่งซื้อ (Sales Orders) จากไฟล์ PDF ด้วยระบบ PyMuPDF (fitz) + Universal Thai Engine"""
     orders = []
 
@@ -247,11 +322,14 @@ def extract_pdf(pdf_content: bytes, filename: str = "unknown.pdf", use_ai: bool 
             cleaned_text = fix_thai_encoding(raw_text)
             order = _parse_express_sales_order_page(cleaned_text, filename, page_idx + 1)
 
+            if order and order.get("error"):
+                # ถ้ามี error (เช่น สินค้าไม่เจอใน Product table) → return error ทันที
+                return [order]
+            
             if order and (order.get("customer") or order.get("address")):
-                if use_ai:
-                    order = _ai_refine_thai_order(order)
                 orders.append(order)
 
+        doc.close()
     except Exception as e_fitz:
         logger.warning(f"PyMuPDF อ่านไฟล์ {filename} ไม่สำเร็จ ลองใช้ pdfplumber: {e_fitz}")
 
@@ -268,8 +346,6 @@ def extract_pdf(pdf_content: bytes, filename: str = "unknown.pdf", use_ai: bool 
                     order = _parse_express_sales_order_page(cleaned_text, filename, page_idx + 1)
 
                     if order and (order.get("customer") or order.get("address")):
-                        if use_ai:
-                            order = _ai_refine_thai_order(order)
                         orders.append(order)
         except Exception as e_plumber:
             logger.error(f"pdfplumber fallback error: {e_plumber}")
@@ -283,47 +359,60 @@ def extract_pdf(pdf_content: bytes, filename: str = "unknown.pdf", use_ai: bool 
     return orders
 
 
-def _ai_refine_thai_order(order: dict) -> dict:
-    """Hybrid Layer 2: ใช้ LM Studio / Gemini / Ollama ตรวจทานและซ่อมคำภาษาไทยกรณีเปิดใช้งาน AI"""
-    if not ENABLE_AI_REFINEMENT:
-        return order
-
-    cust = order.get("customer", "")
-    addr = order.get("address", "")
-
-    # เรียกใช้ AI เฉพาะกรณีพบคราบ CID หรือคำที่ยังแก้ไม่สำเร็จจริงๆ
-    needs_ai = any(c in cust or c in addr for c in ['(cid:', 'สคั่', 'สั่'])
-    if not needs_ai or len(cust) < 2:
-        return order
-
-    # 1. ลองส่งให้ LM Studio (OpenAI Compatible API ที่ port 1234)
-    if LMSTUDIO_URL:
-        try:
-            url = f"{LMSTUDIO_URL.rstrip('/')}/chat/completions"
-            payload = {
-                "messages": [
-                    {"role": "system", "content": "คุณคือ AI ช่วยแก้ไขชื่อลูกค้าและที่อยู่จัดส่งภาษาไทยจากเอกสาร PDF ให้ถูกต้อง สวยงาม ตอบเป็น JSON เท่านั้น รูปแบบ: {\"customer\": \"...\", \"address\": \"...\"}"},
-                    {"role": "user", "content": f"ชื่อลูกค้า: {cust}\nที่อยู่: {addr}"}
-                ],
-                "temperature": 0.1
-            }
-            res = requests.post(url, json=payload, timeout=1.2)
-            if res.status_code == 200:
-                data = res.json()
-                content = data["choices"][0]["message"]["content"]
-                m = re.search(r'\{.*\}', content, re.DOTALL)
-                if m:
-                    parsed = json.loads(m.group(0))
-                    if parsed.get("customer"):
-                        order["customer"] = parsed["customer"].strip()
-                    if parsed.get("address"):
-                        order["address"] = parsed["address"].strip()
-                    logger.info(f"✨ LM Studio AI Refinement Successful for '{order['customer']}'")
-                    return order
-        except Exception as e:
-            logger.debug(f"LM Studio skipped/failed: {e}")
-
-    return order
+def _extract_products_multiline(lines: list[str]) -> list[dict]:
+    """
+    Fallback: แยกสินค้าแบบ column-major (fitz แยกฟอนต์แต่ละช่องคนละบรรทัด)
+    เช่น: 93-0702 / MATE เส้น A / 1 / 3,200.00 / 5.00 กล่อง / 640.00 / 3,200.00
+    """
+    products = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i].strip()
+        # หาบรรทัดที่เป็นรหัสสินค้า (เช่น 93-0702, 91-0201, 007)
+        if not re.match(r'^[\d]{1,4}-[\d]{2,6}$', line) and not re.match(r'^\d{3,6}$', line):
+            i += 1
+            continue
+        code = line
+        name = ''
+        qty = 0.0
+        unit = 'กล่อง'
+        # บรรทัดถัดไป = ชื่อสินค้า (ไม่ใช่ตัวเลขล้วน)
+        if i + 1 < n:
+            nxt = lines[i + 1].strip()
+            if nxt and not re.match(r'^[\d,]+(?:\.\d+)?$', nxt) and len(nxt) > 1:
+                name = nxt
+        # หา จำนวน: ชอบบรรทัดที่มีหน่วยติดมา (เช่น 5.00 กล่อง) — ข้าม ลำดับ/ราคา ที่เป็นตัวเลขล้วน
+        j_end = min(i + 12, n)
+        qty_found = False
+        for j in range(i + 2, j_end):
+            mq = re.match(r'^\s*([\d,]+(?:\.\d+)?)\s+([\u0E00-\u0E7Fa-zA-Z]+)\s*$', lines[j].strip())
+            if mq:
+                qty = float(mq.group(1).replace(',', ''))
+                unit = mq.group(2)
+                qty_found = True
+                break
+        if not qty_found:
+            # Fallback: หาเลขตัวแรกถัดไป (ไม่มีหน่วย) — ข้ามเลขลำดับ 1,2,3... ที่เล็กมาก
+            for j in range(i + 2, j_end):
+                mq = re.match(r'^\s*([\d,]+(?:\.\d+)?)\s*$', lines[j].strip())
+                if mq:
+                    val = float(mq.group(1).replace(',', ''))
+                    if val >= 1:
+                        qty = val
+                        qty_found = True
+                        break
+        if name and qty > 0:
+            products.append({
+                'code': code,
+                'name': name,
+                'quantity': qty,
+                'unit': unit,
+                'price': 0,
+                'total': 0
+            })
+        i += 1
+    return products
 
 
 def _parse_express_sales_order_page(text: str, filename: str, page_num: int) -> dict | None:
@@ -388,12 +477,12 @@ def _parse_express_sales_order_page(text: str, filename: str, page_num: int) -> 
 
     # ค้นหารายการสินค้าและจำนวน (Products & Quantity/Weight)
     for line in lines:
-        if any(k in line for k in ['ลำดับ', 'รหัสสินค้า', 'รายการสินค้า', 'รวมเป็นเงิน', 'เงื่อนไข', 'วันที่', 'ลูกค้า :', 'ที่ส่งของ :', 'โทร', 'ส่วนลด']):
+        if any(k in line for k in ['ลำดับ', 'รหัสสินค้า', 'รายการสินค้า', 'รวมเป็นเงิน', 'เงื่อนไข', 'วันที่', 'ลูกค้า :', 'ที่ส่งของ :', 'โทร', 'ส่วนลด', 'ถนน', 'แขวง', 'เขต', 'กทม', 'จังหวัด', 'ซอย', 'ถ.']):
             continue
 
         m = re.match(r'^(\d+)\s+([\d\-]+)\s+(.+?)\s+([\d,]+(?:\.\d+)?)\s*(\S+)?\s+[\d,]+(?:\.\d+)?\s+[\d,]+(?:\.\d+)?$', line)
         if not m:
-            m = re.search(r'^\s*(\d+)?\s*([A-Za-z0-9\-_]{2,15})?\s+([ก-ฮa-zA-Z0-9\s\.\(\)\+\-\*\/]+?)\s+([\d,]+(?:\.\d+)?)\s*([ก-ฮa-zA-Z]+)?', line)
+            m = re.search(r'^\s*(\d+)?\s*(\d{1,4}-\d{2,6}|\d{3,6})\s+([\u0E00-\u0E7Fa-zA-Z0-9\s\.\(\)\+\-\*\/]+?)\s+([\d,]+(?:\.\d+)?)\s*([\u0E00-\u0E7Fa-zA-Z]+)?', line)
 
         if m:
             pcode = m.group(2) if len(m.groups()) >= 2 and m.group(2) else ''
@@ -413,6 +502,10 @@ def _parse_express_sales_order_page(text: str, filename: str, page_num: int) -> 
                     'total': 0
                 })
 
+    # Fallback: ถ้า regex บรรทัดเดียวไม่เจอสินค้า (ฟอนต์ fitz แยกเป็น column-major)
+    if not products:
+        products = _extract_products_multiline(lines)
+
     if not products:
         products.append({
             'code': 'SO-ITEM',
@@ -423,7 +516,24 @@ def _parse_express_sales_order_page(text: str, filename: str, page_num: int) -> 
             'total': 0
         })
 
-    total_weight = sum(p['quantity'] for p in products if p['quantity'] > 0) if products else 50.0
+    # ค้นหาน้ำหนักสินค้าจาก Product table
+    products_with_weights, missing_products = _lookup_product_weights(products)
+    
+    # ถ้ามีสินค้าที่ไม่เจอใน Product table → return error
+    if missing_products:
+        logger.warning(f"ไม่พบสินค้าใน Product table: {missing_products}")
+        return {
+            "error": "ไม่พบสินค้าในระบบ",
+            "missing_products": missing_products,
+            "customer": customer,
+            "order_number": order_num
+        }
+    
+    # คำนวณน้ำหนักรวม = sum(item_weight) ไม่ใช่ sum(quantity)
+    total_weight = sum(p.get('item_weight', 0) for p in products_with_weights) if products_with_weights else 0
+    
+    # ใช้ products_with_weights แทน products
+    products = products_with_weights
 
     if not customer or customer == "ไม่ระบุชื่อลูกค้า":
         return None
@@ -434,7 +544,7 @@ def _parse_express_sales_order_page(text: str, filename: str, page_num: int) -> 
     return {
         "customer": customer,
         "address": address or "กรุงเทพมหานคร",
-        "weight": total_weight if total_weight > 0 else 50.0,
+        "weight": total_weight,  # น้ำหนักจริงจาก Product table (ไม่มี default)
         "source_file": filename,
         "products": products,
         "order_number": order_num or f"SO-PG{page_num}",
@@ -451,7 +561,7 @@ def _extract_raw_full_text(pdf_bytes: bytes) -> str:
     extracted_text = ""
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            plumber_texts = [p.extract_text() for p in pdf.pages if p.extract_text()]
+            plumber_texts = [text for text in (p.extract_text() for p in pdf.pages) if text]
             extracted_text = "\n".join(plumber_texts)
     except Exception as e:
         logger.error(f"Raw text extraction error: {e}")

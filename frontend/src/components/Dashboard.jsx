@@ -1,19 +1,41 @@
 import { useState, useEffect } from 'react'
 import axios from 'axios'
+import NotificationPanel from './NotificationPanel'
 
-function Dashboard({ orders, routes, onNavigate }) {
+const STATUS_COLORS = {
+  PENDING: '#6b7280',
+  IN_TRANSIT: '#3b82f6',
+  ARRIVED: '#f59e0b',
+  DELIVERED: '#10b981',
+  FAILED: '#ef4444',
+  PARTIAL: '#8b5cf6',
+  RESCHEDULED: '#06b6d4',
+}
+
+function Dashboard({ orders, routes, onNavigate, onClearData }) {
   const [sysStatus, setSysStatus] = useState(null)
+  const [deliveryDashboard, setDeliveryDashboard] = useState(null)
 
   useEffect(() => {
     fetchSystemStatus()
+    fetchDeliveryDashboard()
   }, [])
 
   const fetchSystemStatus = async () => {
     try {
-      const res = await axios.get('/api/system-status')
+      const res = await axios.get('/api/v1/system-status')
       setSysStatus(res.data)
     } catch (err) {
-      console.error('Failed to fetch system status:', err)
+      // silent
+    }
+  }
+
+  const fetchDeliveryDashboard = async () => {
+    try {
+      const res = await axios.get('/api/v1/delivery/dashboard')
+      setDeliveryDashboard(res.data)
+    } catch (err) {
+      // silent
     }
   }
 
@@ -41,7 +63,8 @@ function Dashboard({ orders, routes, onNavigate }) {
           <h2>🚚 ระบบบริหารจัดการขนส่งและวางแผนเส้นทาง (Route Optimization)</h2>
           <p>ประมวลผลอ่านไฟล์ PDF Express ERP แปลงพิกัดภูมิศาสตร์ และคำนวณลำดับจุดส่งอัตโนมัติ</p>
         </div>
-        <div className="hero-badges">
+        <div className="hero-badges" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <NotificationPanel />
           <span className={`status-pill ${sysStatus?.google_maps_api === 'active' ? 'green' : 'amber'}`}>
             {sysStatus?.google_maps_api === 'active' ? '🟢 Google Maps API: Active' : '🟡 Smart Geocoding: Active'}
           </span>
@@ -62,7 +85,7 @@ function Dashboard({ orders, routes, onNavigate }) {
         <div className="stat-card green-card" onClick={() => onNavigate('routes')}>
           <div className="stat-icon-wrapper green-icon">🚚</div>
           <div className="stat-info">
-            <h3>{totalVehiclesUsed} <span className="stat-unit">/ 4 คัน</span></h3>
+            <h3>{totalVehiclesUsed} <span className="stat-unit">คัน</span></h3>
             <p>รถที่ถูกจัดคิวส่งของ</p>
           </div>
           <div className="stat-arrow">→</div>
@@ -159,7 +182,7 @@ function Dashboard({ orders, routes, onNavigate }) {
           ) : (
             <div className="dash-empty-state">
               <span className="empty-icon">🚛</span>
-              <p>ยังไม่ได้จัดเส้นทาง — คลิก "คำนวณเส้นทาง" เพื่อจัดสรรคิวรถ 4 คัน</p>
+              <p>ยังไม่ได้จัดเส้นทาง — คลิก "คำนวณเส้นทาง" เพื่อจัดสรรคิวรถ</p>
             </div>
           )}
         </div>
@@ -192,8 +215,84 @@ function Dashboard({ orders, routes, onNavigate }) {
               <p>ปรับเปลี่ยนทะเบียนคนขับ ปรับความจุสูงสุด 1.8 - 3.75 ตัน</p>
             </div>
           </div>
+
+          <div className="quick-card" onClick={() => onNavigate('driver')}>
+            <div className="quick-icon-bg blue">📱</div>
+            <div className="quick-info">
+              <h4>Driver Mobile</h4>
+              <p>อัปเดตสถานะจัดส่งแบบ real-time สำหรับคนขับรถ</p>
+            </div>
+          </div>
+
+          <div className="quick-card" onClick={() => onNavigate('load-balance')}>
+            <div className="quick-icon-bg purple">⚖️</div>
+            <div className="quick-info">
+              <h4>Load Balancing</h4>
+              <p>วิเคราะห์และกระจายภาระระหว่างรถขนส่งอัตโนมัติ</p>
+            </div>
+          </div>
+
+          {onClearData && (
+            <div className="quick-card danger" onClick={onClearData} style={{ cursor: 'pointer', border: '1px solid #fecdd3' }}>
+              <div className="quick-icon-bg rose" style={{ background: '#ffe4e6', color: '#e11d48' }}>🗑️</div>
+              <div className="quick-info">
+                <h4 style={{ color: '#e11d48' }}>รีเซ็ตข้อมูลระบบทั้งหมด</h4>
+                <p>ล้างข้อมูลออเดอร์ แผนจัดส่ง และ fleet กลับเป็นค่าเริ่มต้น</p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Delivery Status Section */}
+      {deliveryDashboard?.has_plan && deliveryDashboard.summary && (
+        <div className="dash-card" style={{ margin: '20px' }}>
+          <div className="card-header-flex">
+            <h3>📦 สถานะการจัดส่งวันนี้</h3>
+            <button className="text-btn" onClick={() => onNavigate('driver')}>
+              Driver Mobile 📱
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '16px' }}>
+            {Object.entries({
+              'delivered': { label: 'ส่งสำเร็จ', icon: '✅', color: STATUS_COLORS.DELIVERED },
+              'in_transit': { label: 'กำลังขนส่ง', icon: '🚚', color: STATUS_COLORS.IN_TRANSIT },
+              'arrived': { label: 'ถึงจุดส่ง', icon: '📍', color: STATUS_COLORS.ARRIVED },
+              'pending': { label: 'รอจัดส่ง', icon: '⏳', color: STATUS_COLORS.PENDING },
+              'failed': { label: 'ไม่สำเร็จ', icon: '❌', color: STATUS_COLORS.FAILED },
+              'partial': { label: 'ส่งบางส่วน', icon: '⚠️', color: STATUS_COLORS.PARTIAL },
+            }).map(([key, cfg]) => (
+              <div key={key} style={{
+                flex: '1 1 120px',
+                background: `${cfg.color}10`,
+                border: `1px solid ${cfg.color}30`,
+                borderRadius: '12px',
+                padding: '12px',
+                textAlign: 'center',
+              }}>
+                <div style={{ fontSize: '24px', fontWeight: 800, color: cfg.color }}>
+                  {deliveryDashboard.summary[key] || 0}
+                </div>
+                <div style={{ fontSize: '12px', color: cfg.color, fontWeight: 600 }}>
+                  {cfg.icon} {cfg.label}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ background: '#e2e8f0', borderRadius: '6px', height: '10px', overflow: 'hidden' }}>
+            <div style={{
+              width: `${deliveryDashboard.summary.completion_pct || 0}%`,
+              background: 'linear-gradient(90deg, #10b981, #34d399)',
+              height: '100%',
+              borderRadius: '6px',
+              transition: 'width 0.5s ease',
+            }} />
+          </div>
+          <p style={{ fontSize: '13px', color: '#64748b', marginTop: '6px', fontWeight: 600 }}>
+            {deliveryDashboard.summary.completion_pct || 0}% เสร็จสิ้น
+          </p>
+        </div>
+      )}
     </div>
   )
 }

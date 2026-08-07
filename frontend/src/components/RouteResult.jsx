@@ -1,13 +1,49 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import axios from 'axios'
 
-function RouteResult({ routes, onSendEmail }) {
+function RouteResult({ routes, deferredInfo, onSendLine, onSendDriverLine }) {
   const vehicleColors = ['blue', 'green', 'orange', 'purple']
-  const [emailModal, setEmailModal] = useState(null) // vehicle_id or 'all'
-  const [emailAddress, setEmailAddress] = useState('')
-  const [sending, setSending] = useState(false)
-  const [sendResult, setSendResult] = useState(null)
   const [downloadingExcel, setDownloadingExcel] = useState(false)
+  const [sendingLine, setSendingLine] = useState(false)
+  const [sendingDriverLine, setSendingDriverLine] = useState(false)
+  const [lineUserIdMap, setLineUserIdMap] = useState({})
+
+  useEffect(() => {
+    const fetchVehicles = async () => {
+      try {
+        const res = await fetch('/api/v1/vehicles')
+        if (res.ok) {
+          const data = await res.json()
+          const map = {}
+          ;(data.vehicles || []).forEach(v => {
+            if (v.id != null && v.line_user_id) map[v.id] = v.line_user_id
+          })
+          setLineUserIdMap(map)
+        }
+      } catch (e) {
+        console.warn('โหลดข้อมูลรถเพื่อส่ง LINE ไม่สำเร็จ', e)
+      }
+    }
+    fetchVehicles()
+  }, [])
+
+  const handleSendDriverLine = async (route) => {
+    const driverLineUserId = lineUserIdMap[route.vehicle_id]
+    if (!driverLineUserId) {
+      alert('ยังไม่ได้กรอก LINE User ID ของคนขับคันนี้\nไปที่เมนู "จัดการรถ" แล้วกรอก LINE User ID ให้รถคันนี้ก่อน')
+      return
+    }
+    if (!onSendDriverLine) return
+    setSendingDriverLine(true)
+    try {
+      await onSendDriverLine(route, driverLineUserId)
+      alert(`ส่งลิงก์แมพเข้า LINE ให้คนขับคัน "${route.name || route.vehicle_id}" เรียบร้อยแล้ว`)
+    } catch (err) {
+      alert(err.message || 'ส่ง LINE ให้คนขับไม่สำเร็จ')
+    } finally {
+      setSendingDriverLine(false)
+    }
+  }
 
   const getMapsUrl = (route) => {
     if (route.google_maps_link) return route.google_maps_link
@@ -23,7 +59,7 @@ function RouteResult({ routes, onSendEmail }) {
     const url = getMapsUrl(route)
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(url).then(() => {
-        alert(`📋 คัดลอกลิงก์ Google Maps ของ ${route.name || 'รถคันนี้'} เรียบร้อยแล้ว!`)
+        alert(`คัดลอกลิงก์ Google Maps ของ ${route.name || 'รถคันนี้'} เรียบร้อยแล้ว!`)
       }).catch(() => fallbackCopyTextToClipboard(url, route.name))
     } else {
       fallbackCopyTextToClipboard(url, route.name)
@@ -37,7 +73,7 @@ function RouteResult({ routes, onSendEmail }) {
     textArea.select()
     try {
       document.execCommand('copy')
-      alert(`📋 คัดลอกลิงก์ Google Maps ของ ${routeName || 'รถคันนี้'} เรียบร้อยแล้ว!`)
+      alert(`คัดลอกลิงก์ Google Maps ของ ${routeName || 'รถคันนี้'} เรียบร้อยแล้ว!`)
     } catch (err) {
       console.error('Fallback copy failed', err)
       alert('ไม่สามารถคัดลอกลิงก์อัตโนมัติได้')
@@ -48,7 +84,7 @@ function RouteResult({ routes, onSendEmail }) {
   const handleDownloadExcel = async () => {
     setDownloadingExcel(true)
     try {
-      const response = await axios.post('/api/export-manifest-excel', { routes }, { responseType: 'blob' })
+      const response = await axios.post('/api/v1/export-manifest-excel', { routes }, { responseType: 'blob' })
       const url = window.URL.createObjectURL(new Blob([response.data]))
       const link = document.createElement('a')
       link.href = url
@@ -62,32 +98,6 @@ function RouteResult({ routes, onSendEmail }) {
     } finally {
       setDownloadingExcel(false)
     }
-  }
-
-  const handleSendEmail = async () => {
-    if (!emailAddress.trim()) return
-
-    setSending(true)
-    setSendResult(null)
-
-    try {
-      const routesToSend = emailModal === 'all'
-        ? routes
-        : routes.filter(r => r.vehicle_id === emailModal)
-
-      const result = await onSendEmail(routesToSend, emailAddress)
-      setSendResult({ type: 'success', message: result.message || 'ส่ง email สำเร็จ!' })
-    } catch (err) {
-      setSendResult({ type: 'error', message: err.message || 'ส่ง email ไม่สำเร็จ' })
-    } finally {
-      setSending(false)
-    }
-  }
-
-  const closeModal = () => {
-    setEmailModal(null)
-    setEmailAddress('')
-    setSendResult(null)
   }
 
   const getVehicleCapacityText = (route) => {
@@ -107,7 +117,7 @@ function RouteResult({ routes, onSendEmail }) {
     <div className="route-result">
       <div className="route-header">
         <div>
-          <h2>🗺️ ผลลัพธ์การจัดเส้นทางตามโซนและน้ำหนักบรรทุก</h2>
+          <h2>ผลลัพธ์การจัดเส้นทางตามโซนและน้ำหนักบรรทุก</h2>
           <p>จัดสรรออเดอร์ลงรถตามทิศทางภูมิศาสตร์และขีดจำกัดน้ำหนัก</p>
         </div>
         {routes.length > 0 && (
@@ -117,39 +127,102 @@ function RouteResult({ routes, onSendEmail }) {
               onClick={handleDownloadExcel}
               disabled={downloadingExcel}
             >
-              {downloadingExcel ? '⏳ กำลังสร้าง Excel...' : '📊 ดาวน์โหลดใบส่งงานคนขับรถ (Excel)'}
+              {downloadingExcel ? 'กำลังสร้าง Excel...' : 'ดาวน์โหลดใบส่งงานคนขับรถ (Excel)'}
             </button>
-            <button className="btn-primary" onClick={() => setEmailModal('all')}>
-              📧 ส่ง Email ทั้งหมด
-            </button>
+            {onSendLine && (
+              <button
+                className="btn-secondary"
+                onClick={async () => {
+                  setSendingLine(true)
+                  try {
+                    await onSendLine(routes)
+                  } finally {
+                    setSendingLine(false)
+                  }
+                }}
+                disabled={sendingLine}
+                style={{ background: '#06b6d4', color: 'white', borderColor: '#06b6d4' }}
+              >
+                {sendingLine ? 'กำลังส่ง...' : '📤 ส่ง LINE Notification'}
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {deferredInfo && deferredInfo.count > 0 && (
+        <div className="deferred-warning" style={{
+          background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
+          border: '2px solid #f59e0b',
+          borderRadius: '12px',
+          padding: '20px 24px',
+          marginBottom: '24px',
+          boxShadow: '0 4px 12px rgba(245, 158, 11, 0.15)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+            <span style={{ fontSize: '28px', lineHeight: 1 }}>⚠️</span>
+            <div style={{ flex: 1 }}>
+              <h3 style={{ margin: '0 0 8px 0', color: '#92400e', fontSize: '18px' }}>
+                ออเดอร์เกินความจุรถ — เลื่อนส่งวันถัดไป
+              </h3>
+              <p style={{ margin: '0 0 12px 0', color: '#78350f', fontSize: '14px' }}>
+                ออเดอร์ <strong>{deferredInfo.count} รายการ</strong> น้ำหนักรวม <strong>{deferredInfo.weight.toLocaleString()} kg</strong> จะถูกส่งในวันถัดไป เนื่องจากน้ำหนักรวมเกินความจุรถที่มี
+              </p>
+              <details style={{ marginTop: '8px' }}>
+                <summary style={{ cursor: 'pointer', color: '#92400e', fontWeight: 600, fontSize: '13px' }}>
+                  ดูรายการออเดอร์ที่เลื่อนส่ง ({deferredInfo.count} รายการ)
+                </summary>
+                <div style={{ marginTop: '10px', maxHeight: '200px', overflowY: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ background: '#fde68a' }}>
+                        <th style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid #f59e0b' }}>ลำดับ</th>
+                        <th style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid #f59e0b' }}>เลขที่ SO</th>
+                        <th style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid #f59e0b' }}>ลูกค้า</th>
+                        <th style={{ padding: '6px 10px', textAlign: 'right', borderBottom: '1px solid #f59e0b' }}>น้ำหนัก (kg)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deferredInfo.orders.map((o, i) => (
+                        <tr key={i} style={{ background: i % 2 === 0 ? '#fffbeb' : '#fef3c7' }}>
+                          <td style={{ padding: '5px 10px', borderBottom: '1px solid #fde68a' }}>{i + 1}</td>
+                          <td style={{ padding: '5px 10px', borderBottom: '1px solid #fde68a' }}>{o.order_number || '-'}</td>
+                          <td style={{ padding: '5px 10px', borderBottom: '1px solid #fde68a' }}>{o.customer || '-'}</td>
+                          <td style={{ padding: '5px 10px', textAlign: 'right', borderBottom: '1px solid #fde68a' }}>{o.weight || 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="routes-grid">
         {routes.map((route, index) => {
           const capText = getVehicleCapacityText(route)
           const maxCapKg = route.capacity || (route.vehicle_id === 2 ? 1900 : route.vehicle_id === 3 ? 2240 : 3750)
-          const weightPercent = Math.min(100, Math.round((route.total_weight / maxCapKg) * 100))
+          const weightPercent = maxCapKg > 0 ? Math.min(100, Math.round((route.total_weight / maxCapKg) * 100)) : 0
 
           return (
             <div key={route.vehicle_id} className={`route-card ${vehicleColors[index % 4]}`}>
               <div className="route-card-header">
                 <div className="vehicle-info">
-                  <h3>🚛 {route.name || `รถคันที่ ${route.vehicle_id}`}</h3>
+                  <h3>{route.name || `รถคันที่ ${route.vehicle_id}`}</h3>
                   <div className="driver-details">
-                    <span>👤 คนขับ: {route.driver || 'ไม่ระบุ'}</span>
-                    <span>🚗 ทะเบียน: {route.plate || 'ไม่ระบุ'}</span>
-                    <span>📦 น้ำหนักสูงสุด: {capText}</span>
+                    <span>คนขับ: {route.driver || 'ไม่ระบุ'}</span>
+                    <span>ทะเบียน: {route.plate || 'ไม่ระบุ'}</span>
+                    <span>น้ำหนักสูงสุด: {capText}</span>
                   </div>
                 </div>
                 <div className="route-summary-badge">
-                  <div className="stops-count">📍 {route.stops.length} จุดส่ง</div>
-                  <div className="total-weight">⚖️ {route.total_weight} kg</div>
+                  <div className="stops-count">{route.stops.length} จุดส่ง</div>
+                  <div className="total-weight">{route.total_weight} kg</div>
                 </div>
               </div>
 
-              {/* Progress bar สำหรับน้ำหนักบรรทุก */}
               <div className="capacity-bar-container">
                 <div className="capacity-bar-label">
                   <span>น้ำหนักบรรทุก: {route.total_weight} / {maxCapKg} kg</span>
@@ -163,9 +236,8 @@ function RouteResult({ routes, onSendEmail }) {
                 </div>
               </div>
 
-              {/* รายการจุดจอด */}
               <div className="stops-list">
-                <h4>📋 ลำดับการจัดส่ง ({route.stops.length} จุด)</h4>
+                <h4>ลำดับการจัดส่ง ({route.stops.length} จุด)</h4>
                 <ol>
                   {route.stops.map((stop, sIndex) => (
                     <li key={sIndex} className="stop-item">
@@ -177,7 +249,7 @@ function RouteResult({ routes, onSendEmail }) {
                         </div>
                         <div className="stop-address">{stop.address}</div>
                         <div style={{ display: 'flex', gap: '6px', marginTop: '4px', flexWrap: 'wrap', alignItems: 'center' }}>
-                          {stop.zone && <span className="stop-zone-badge">📍 {stop.zone}</span>}
+                          {stop.zone && <span className="stop-zone-badge">{stop.zone}</span>}
                           <span style={{ fontSize: '12px', color: '#475569', fontWeight: 'bold' }}>
                             {stop.is_verified ? '100%' : `${Math.round(stop.confidence_score || 50)}%`}
                           </span>
@@ -189,14 +261,13 @@ function RouteResult({ routes, onSendEmail }) {
                 </ol>
               </div>
 
-              {/* ปุ่มการทำงาน */}
               <div className="route-card-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                 <button
                   className="btn-maps"
                   onClick={() => handleOpenMaps(route)}
                   style={{ flex: 1, minWidth: '140px' }}
                 >
-                  🗺️ ดูใน Google Maps
+                  ดูใน Google Maps
                 </button>
                 <button
                   className="btn-secondary"
@@ -204,66 +275,22 @@ function RouteResult({ routes, onSendEmail }) {
                   title="คัดลอกลิงก์ Google Maps นำทางของรถคันนี้"
                   style={{ background: '#f8fafc', borderColor: '#cbd5e1', color: '#1e293b', fontWeight: 600 }}
                 >
-                  🔗 คัดลอกลิงก์เเมพ
+                  คัดลอกลิงก์แมพ
                 </button>
                 <button
                   className="btn-secondary"
-                  onClick={() => setEmailModal(route.vehicle_id)}
+                  onClick={() => handleSendDriverLine(route)}
+                  disabled={sendingDriverLine}
+                  title={lineUserIdMap[route.vehicle_id] ? "ส่งลิงก์แมพเข้า LINE ให้คนขับคันนี้" : "กรอก LINE User ID ที่หน้า จัดการรถ ก่อน"}
+                  style={{ background: '#06b6d4', color: 'white', borderColor: '#06b6d4' }}
                 >
-                  📧 ส่ง Email
+                  {sendingDriverLine ? 'กำลังส่ง...' : 'ส่ง LINE ให้คนขับ'}
                 </button>
               </div>
             </div>
           )
         })}
       </div>
-
-      {/* Email Modal */}
-      {emailModal && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <h3>📧 ส่งแผนการจัดส่งทาง Email</h3>
-            <p>
-              {emailModal === 'all'
-                ? 'ส่งแผนการจัดส่งของรถทุกคันไปยัง email'
-                : `ส่งแผนการจัดส่งของรถคันที่ ${emailModal} ไปยัง email`}
-            </p>
-
-            <div className="form-group">
-              <label>อีเมลผู้รับ:</label>
-              <input
-                type="email"
-                placeholder="driver@company.com"
-                value={emailAddress}
-                onChange={(e) => setEmailAddress(e.target.value)}
-              />
-            </div>
-
-            {sendResult && (
-              <div className={`send-result ${sendResult.type}`}>
-                {sendResult.message}
-              </div>
-            )}
-
-            <div className="modal-actions">
-              <button
-                className="btn-cancel"
-                onClick={closeModal}
-                disabled={sending}
-              >
-                ยกเลิก
-              </button>
-              <button
-                className="btn-primary"
-                onClick={handleSendEmail}
-                disabled={sending || !emailAddress.trim()}
-              >
-                {sending ? 'กำลังส่ง...' : 'ส่ง Email'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

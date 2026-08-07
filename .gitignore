@@ -4,7 +4,11 @@ __pycache__/
 *$py.class
 *.so
 venv/
+
+# Environment files (secrets)
 .env
+.env.*
+!.env.example
 
 # Node.js
 node_modules/
@@ -24,3 +28,16 @@ Thumbs.db
 # Uploads
 uploads/
 *.pdf
+
+# Docker volumes
+backups/
+
+# JWT secret file (auto-generated)
+backend/.jwt_secret
+
+# SQLite database with customer PII (committed accidentally in initial commit)
+backend/data/logistics.db
+backend/data/*.db
+
+# PDF / upload backups containing customer PII
+backend/data/op_backups/

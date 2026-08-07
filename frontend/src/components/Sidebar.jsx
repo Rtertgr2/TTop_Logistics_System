@@ -1,10 +1,14 @@
-function Sidebar({ currentPage, onNavigate, onClearData }) {
+function Sidebar({ currentPage, onNavigate, onClearData, user, onLogout }) {
   const menuItems = [
     { id: 'dashboard', label: 'แดชบอร์ด', icon: '📊' },
     { id: 'upload', label: 'อัปโหลดไฟล์', icon: '📁' },
     { id: 'orders', label: 'รายการสั่งซื้อ', icon: '📋' },
+    { id: 'booking', label: 'จัดการวันส่ง', icon: '📅' },
     { id: 'routes', label: 'ผลลัพธ์เส้นทาง', icon: '🗺️' },
     { id: 'vehicles', label: 'จัดการรถขนส่ง', icon: '🚛' },
+    { id: 'driver', label: 'Driver Mobile', icon: '📱' },
+    { id: 'load-balance', label: 'Load Balancing', icon: '⚖️' },
+    { id: 'admin', label: 'Admin Dashboard', icon: '📊' },
     { id: 'database', label: 'จัดการฐานข้อมูล', icon: '🗄️' },
   ]
 
@@ -28,8 +32,36 @@ function Sidebar({ currentPage, onNavigate, onClearData }) {
           </button>
         ))}
       </nav>
-      <div className="sidebar-footer">
-        <p>v1.2.0</p>
+      <div className="sidebar-footer" style={{ flexDirection: 'column', gap: '10px', alignItems: 'stretch' }}>
+        {user && (
+          <div className="sidebar-user">
+            <span className="user-avatar">👤</span>
+            <div className="user-info">
+              <span className="user-name">{user.name || user.username}</span>
+              <span className="user-role">{user.role}</span>
+            </div>
+          </div>
+        )}
+        {onLogout && (
+          <button className="sidebar-reset-btn" onClick={onLogout} title="ออกจากระบบ">
+            <span>🚪</span>
+            <span>ออกจากระบบ</span>
+          </button>
+        )}
+        {onClearData && (
+          <button
+            className="sidebar-reset-btn"
+            onClick={onClearData}
+            title="ล้างข้อมูลออเดอร์ แผนจัดส่ง และ Fleet รถขนส่งทั้งหมด"
+          >
+            <span>🗑️</span>
+            <span>รีเซ็ตข้อมูลระบบ</span>
+          </button>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+          <span>Logistics System</span>
+          <span>v2.1.0</span>
+        </div>
       </div>
     </aside>
   )
