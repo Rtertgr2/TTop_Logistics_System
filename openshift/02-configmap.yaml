@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logistics-config
+  namespace: logistics
+data:
+  POSTGRES_DB: "logistics"
+  POSTGRES_USER: "logistics"
+  DATABASE_HOST: "postgresql"
+  DATABASE_PORT: "5432"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  DEPOT_ADDRESS: "บริษัท ทรีท็อปเคมิคัลแอนด์ฟู้ดส์ คอร์ปอเรชั่น จำกัด"
+  DEPOT_LAT: "13.781882"
+  DEPOT_LNG: "100.425041"
+  MAX_FILE_SIZE_MB: "10"
+  PRODUCTION_MODE: "true"
+  LOG_LEVEL: "INFO"
+  LOG_JSON: "true"
+  RATE_LIMIT_PER_MINUTE: "60"
+  SOLVE_TIMEOUT_SECONDS: "30"
+  MAX_ROUTE_DISTANCE_KM: "200"
+  AVG_SPEED_KMH: "30"
+  ALLOWED_ORIGINS: "https://logistics.apps.example.com"
