@@ -41,3 +41,6 @@ backend/data/*.db
 
 # PDF / upload backups containing customer PII
 backend/data/op_backups/
+
+# Test PDF files with customer data
+FileTest/

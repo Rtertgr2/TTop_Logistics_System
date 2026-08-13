@@ -164,14 +164,6 @@ npm install
 npm run dev
 ```
 
-<<<<<<< Updated upstream
-## API Endpoints
-- `POST /upload` - อัปโหลดไฟล์ PDF
-- `POST /plan-routes` - คำนวณเส้นทาง
-
-## TEST URL
-- https://adventures-proceeds-modular-hello.trycloudflare.com
-=======
 > ⚠️ สิ่งแวดล้อม dev นี้ใช้ Postgres เป็น default (`DATABASE_URL`) — ถ้าจะใช้ SQLite ให้ตั้ง `DATABASE_URL=sqlite:///./data/logistics.db` ก่อนรัน
 
 ---
@@ -402,4 +394,3 @@ dig logistics.company.com
 | 02 ส.ค. 2026 | 2.6 | **Queue + Metrics** — Celery async plan, Prometheus/Grafana |
 
 ดูรายละเอียดทั้งหมดใน `master_checklist_routing_system.md`
->>>>>>> Stashed changes

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, UploadFile, File, HTTPException, Body, Depends, Request
 from fastapi.responses import Response
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Union
 from sqlalchemy import text
 
@@ -21,7 +21,7 @@ from services.delivery_status import get_valid_next_statuses, get_status_label, 
 from services.load_balancer import detect_imbalances, find_transfer_suggestions, execute_transfer, recalculate_route_after_transfer, calculate_utilization
 from services.notifications import get_notifications, mark_notification_read, mark_all_read, get_unread_count, add_notification
 from config import DEPOT_LAT, DEPOT_LNG, DEPOT_ADDRESS, GOOGLE_MAPS_API_KEY, MAX_FILE_SIZE_MB, MAX_PDF_PAGES
-from auth import login_user, get_current_user, require_role
+from auth import login_user, get_current_user, require_role, list_users_from_db
 from metrics import record_route_planned, record_order_processed
 
 
@@ -54,6 +54,11 @@ class VerifyLocationRequest(BaseModel):
     verified_by: Optional[str] = "user"
 
 
+class AssignDateRequest(BaseModel):
+    order_ids: list[int]
+    delivery_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -79,6 +84,117 @@ def list_users(user: dict = Depends(require_role(["admin"]))):
     """ดึงรายชื่อผู้ใช้ทั้งหมดจากฐานข้อมูล (admin only)"""
     users = list_users_from_db()
     return {"users": users}
+
+
+# ── Employee Management Endpoints (RBAC: admin only) ──────────────
+
+class CreateEmployeeRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+    name: str = ""
+    email: str = ""
+    phone: str = ""
+    department: str = ""
+    position: str = ""
+
+
+class UpdateEmployeeRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    department: Optional[str] = None
+    position: Optional[str] = None
+    role: Optional[str] = None
+
+
+class ChangePasswordRequest(BaseModel):
+    new_password: str
+
+
+@router.get("/auth/employees")
+def get_employees(
+    page: int = 1,
+    page_size: int = 20,
+    search: str = "",
+    role: str = "",
+    active: Optional[bool] = None,
+    user: dict = Depends(require_role(["admin"])),
+):
+    """ดึงรายชื่อพนักงานแบบแบ่งหน้า + กรอง/ค้นหา (admin only)"""
+    from database.db import list_employees
+    result = list_employees(page=page, page_size=page_size, search=search, role=role, active=active)
+    return result
+
+
+@router.get("/auth/employees/{user_id}")
+def get_employee_by_id(user_id: int, user: dict = Depends(require_role(["admin"]))):
+    """ดึงข้อมูลพนักงานคนเดียว (admin only)"""
+    from database.db import get_employee
+    return get_employee(user_id)
+
+
+@router.post("/auth/employees")
+def create_employee_endpoint(req: CreateEmployeeRequest, user: dict = Depends(require_role(["admin"]))):
+    """สร้างพนักงานใหม่ (admin only)"""
+    from database.db import create_employee
+    return create_employee(
+        username=req.username,
+        password=req.password,
+        role=req.role,
+        name=req.name,
+        email=req.email,
+        phone=req.phone,
+        department=req.department,
+        position=req.position,
+        actor=user,
+    )
+
+
+@router.put("/auth/employees/{user_id}")
+def update_employee_endpoint(user_id: int, req: UpdateEmployeeRequest, user: dict = Depends(require_role(["admin"]))):
+    """อัปเดตข้อมูลพนักงาน (admin only)"""
+    from database.db import update_employee
+    updates = {}
+    if req.name is not None:
+        updates["name"] = req.name
+    if req.email is not None:
+        updates["email"] = req.email
+    if req.phone is not None:
+        updates["phone"] = req.phone
+    if req.department is not None:
+        updates["department"] = req.department
+    if req.position is not None:
+        updates["position"] = req.position
+    if req.role is not None:
+        updates["role"] = req.role
+    return update_employee(user_id, updates, actor=user)
+
+
+@router.put("/auth/employees/{user_id}/password")
+def change_employee_password_endpoint(user_id: int, req: ChangePasswordRequest, user: dict = Depends(require_role(["admin"]))):
+    """เปลี่ยนรหัสผ่านพนักงาน (admin only)"""
+    from database.db import change_employee_password
+    return change_employee_password(user_id, req.new_password, actor=user)
+
+
+@router.put("/auth/employees/{user_id}/toggle-active")
+def toggle_employee_active_endpoint(user_id: int, user: dict = Depends(require_role(["admin"]))):
+    """เปิด/ปิดการใช้งานพนักงาน — ห้ามปิดตัวเอง (admin only)"""
+    from database.db import toggle_employee_active
+    return toggle_employee_active(user_id, actor=user)
+
+
+@router.get("/auth/audit-logs")
+def get_audit_logs_endpoint(
+    page: int = 1,
+    limit: int = 50,
+    username: str = "",
+    user: dict = Depends(require_role(["admin"])),
+):
+    """ดึงประวัติ audit logs (admin only)"""
+    from database.db import get_audit_logs
+    return get_audit_logs(page=page, limit=limit, username=username)
 
 
 # ── Endpoints ────────────────────────────────────────────────────
@@ -300,6 +416,38 @@ def get_today_orders_api(user: dict = Depends(get_current_user)):
     """ดึงรายการออเดอร์เฉพาะวันปัจจุบัน (ตัดรอบเที่ยงคืน)"""
     orders = get_today_orders()
     return {"orders": orders, "total": len(orders)}
+
+
+@router.post("/orders/assign-date")
+def assign_delivery_date_api(body: AssignDateRequest, user: dict = Depends(get_current_user)):
+    """มอบหมายวันจัดส่งให้กับออเดอร์ที่เลือก"""
+    from database.connection import SessionLocal
+    from database.models import Order
+
+    if not body.order_ids:
+        raise HTTPException(status_code=400, detail="ไม่มี order_ids")
+    if not body.delivery_date:
+        raise HTTPException(status_code=400, detail="ไม่มี delivery_date")
+
+    # Validate delivery_date format (YYYY-MM-DD)
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", body.delivery_date):
+        raise HTTPException(status_code=400, detail="รูปแบบวันที่ไม่ถูกต้อง (ต้องเป็น YYYY-MM-DD)")
+
+    db = SessionLocal()
+    try:
+        updated = db.query(Order).filter(Order.id.in_(body.order_ids)).update(
+            {Order.delivery_date: body.delivery_date},
+            synchronize_session="fetch",
+        )
+        db.commit()
+        return {"success": True, "updated": updated, "delivery_date": body.delivery_date}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error assigning delivery date: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="ไม่สามารถมอบหมายวันจัดส่งได้")
+    finally:
+        db.close()
 
 
 @router.get("/routes/today")
@@ -610,7 +758,7 @@ def delivery_update_status(req: UpdateStopStatusRequest, user: dict = Depends(ge
     role = user.get("role", "user")
     if role == "driver":
         route_driver = get_route_driver_name(req.route_id)
-        if route_driver != user.get("username"):
+        if route_driver not in (user.get("username"), user.get("name")):
             raise HTTPException(
                 status_code=403,
                 detail="ไม่มีสิทธิ์อัปเดตสถานะของเส้นทางนี้"
@@ -658,7 +806,7 @@ def delivery_dashboard(user: dict = Depends(get_current_user)):
 def driver_route(driver_name: str, user: dict = Depends(get_current_user)):
     """ดึงเส้นทางของคนขับวันนี้ (driver เห็นได้เฉพาะเส้นทางตัวเอง)"""
     role = user.get("role", "user")
-    if role == "driver" and driver_name != user.get("username"):
+    if role == "driver" and driver_name != user.get("username") and driver_name != user.get("name"):
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ดูเส้นทางของคนขับอื่น")
     route = get_driver_route(driver_name)
     if not route:
@@ -679,7 +827,7 @@ def valid_transitions(current_status: str, user: dict = Depends(get_current_user
 
 
 @router.post("/delivery/update-item")
-def delivery_update_item(req: UpdateItemDeliveryRequest, user: dict = Depends(get_current_user)):
+def delivery_update_item(req: UpdateItemDeliveryRequest, user: dict = Depends(require_role(["admin", "dispatcher"]))):
     """อัปเดตสถานะการจัดส่งระดับ item"""
     success = update_item_delivery(
         stop_id=req.stop_id,
@@ -877,3 +1025,101 @@ def mark_all_notifications_read(user: dict = Depends(get_current_user)):
     role = user.get("role", "dispatcher")
     count = mark_all_read(target_role=role)
     return {"marked_count": count}
+
+
+# ── Booking Endpoints ────────────────────────────────────────────
+
+class AssignBookingRequest(BaseModel):
+    order_ids: list[int]
+    delivery_date: str
+    booking_status: Optional[str] = "booked"
+
+
+@router.get("/booking/pending")
+def get_booking_pending(user: dict = Depends(get_current_user)):
+    """ดึงออเดอร์ที่ยังไม่ได้กำหนดวันส่ง (booking_status = pending หรือไม่มี delivery_date)"""
+    from database.connection import SessionLocal
+    from database.models import Order
+
+    db = SessionLocal()
+    try:
+        orders = db.query(Order).filter(
+            (Order.booking_status == "pending") | (Order.delivery_date.is_(None))
+        ).order_by(Order.id.desc()).all()
+
+        result = []
+        for o in orders:
+            result.append({
+                "id": o.id,
+                "order_number": o.order_number,
+                "customer": o.customer,
+                "address": o.address,
+                "weight": o.weight,
+                "lat": o.lat,
+                "lng": o.lng,
+                "booking_status": o.booking_status or "pending",
+                "delivery_date": o.delivery_date,
+                "created_at": o.created_at.isoformat() if o.created_at else None,
+            })
+        return {"orders": result, "total": len(result)}
+    finally:
+        db.close()
+
+
+@router.get("/booking/calendar")
+def get_booking_calendar(user: dict = Depends(get_current_user)):
+    """ดึงข้อมูลปฏิทินจองวันส่ง — กลุ่มออเดอร์ตาม delivery_date"""
+    from database.connection import SessionLocal
+    from database.models import Order
+
+    db = SessionLocal()
+    try:
+        orders = db.query(Order).filter(
+            Order.delivery_date.is_(None) == False
+        ).order_by(Order.delivery_date.asc()).all()
+
+        calendar = {}
+        for o in orders:
+            date = o.delivery_date
+            if not date:
+                continue
+            if date not in calendar:
+                calendar[date] = {"count": 0, "total_weight": 0, "orders": []}
+            calendar[date]["count"] += 1
+            calendar[date]["total_weight"] += float(o.weight or 0)
+            calendar[date]["orders"].append({
+                "id": o.id,
+                "order_number": o.order_number,
+                "customer": o.customer,
+                "weight": o.weight,
+            })
+        return {"calendar": calendar}
+    finally:
+        db.close()
+
+
+@router.post("/booking/assign")
+def assign_booking(req: AssignBookingRequest, user: dict = Depends(require_role(["admin", "dispatcher"]))):
+    """กำหนดวันส่งให้ออเดอร์ที่เลือก"""
+    from database.connection import SessionLocal
+    from database.models import Order
+
+    db = SessionLocal()
+    try:
+        updated = 0
+        for oid in req.order_ids:
+            order = db.query(Order).filter(Order.id == oid).first()
+            if order:
+                order.delivery_date = req.delivery_date
+                order.booking_status = req.booking_status or "booked"
+                updated += 1
+
+        db.commit()
+        logger.info(f"Booking assigned: {updated} orders -> {req.delivery_date} by {user.get('username', 'unknown')}")
+        return {"status": "success", "updated": updated, "delivery_date": req.delivery_date}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error assigning booking: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="ไม่สามารถกำหนดวันส่งได้")
+    finally:
+        db.close()

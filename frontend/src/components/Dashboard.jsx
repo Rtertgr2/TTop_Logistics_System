@@ -1,305 +1,297 @@
-import { useState, useEffect } from 'react'
-import axios from 'axios'
-import NotificationPanel from './NotificationPanel'
+import { useState, useEffect, useMemo } from "react"
+import { useNavigate } from "react-router-dom"
+import { useData } from "@/context/DataContext"
+import { useAuth } from "@/context/AuthContext"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Progress } from "@/components/ui/progress"
+import PermissionGate from "@/components/PermissionGate"
+import NotificationPanel from "@/components/NotificationPanel"
+import ConfirmDialog from "@/components/ConfirmDialog"
+import {
+  Package, Truck, MapPin, Scale, Upload, FileText, Settings,
+  Smartphone, Scale as ScaleIcon, Trash2, AlertCircle
+} from "lucide-react"
+import { toast } from "sonner"
+import { DELIVERY_STATUS_CONFIG } from "@/constants"
 
-const STATUS_COLORS = {
-  PENDING: '#6b7280',
-  IN_TRANSIT: '#3b82f6',
-  ARRIVED: '#f59e0b',
-  DELIVERED: '#10b981',
-  FAILED: '#ef4444',
-  PARTIAL: '#8b5cf6',
-  RESCHEDULED: '#06b6d4',
-}
+const QUICK_ACTIONS = [
+  { id: 'upload', label: 'อัปโหลดไฟล์ PDF ใบสั่งขาย', desc: 'รองรับ Express PDF หลายไฟล์พร้อมกัน', icon: Upload, color: 'bg-blue-500' },
+  { id: 'orders', label: 'ตรวจสอบรายการสั่งซื้อ', desc: 'ดูรายการสินค้า น้ำหนัก และตำแหน่งลูกค้า', icon: FileText, color: 'bg-emerald-500' },
+  { id: 'vehicles', label: 'จัดการ fleet รถขนส่ง', desc: 'ปรับเปลี่ยนทะเบียนคนขับ ความจุสูงสุด', icon: Settings, color: 'bg-amber-500' },
+  { id: 'driver', label: 'Driver Mobile', desc: 'อัปเดตสถานะจัดส่งแบบ real-time', icon: Smartphone, color: 'bg-sky-500' },
+  { id: 'load-balance', label: 'Load Balancing', desc: 'วิเคราะห์และกระจายภาระระหว่างรถ', icon: ScaleIcon, color: 'bg-purple-500' },
+]
 
-function Dashboard({ orders, routes, onNavigate, onClearData }) {
+function Dashboard() {
+  const { orders, routes, clearAllData, fetchTodayData } = useData()
+  const { user } = useAuth()
+  const navigate = useNavigate()
   const [sysStatus, setSysStatus] = useState(null)
   const [deliveryDashboard, setDeliveryDashboard] = useState(null)
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false)
 
   useEffect(() => {
     fetchSystemStatus()
     fetchDeliveryDashboard()
+    fetchTodayData()
+    const interval = setInterval(fetchDeliveryDashboard, 30000)
+    return () => clearInterval(interval)
   }, [])
 
   const fetchSystemStatus = async () => {
     try {
-      const res = await axios.get('/api/v1/system-status')
-      setSysStatus(res.data)
-    } catch (err) {
-      // silent
-    }
+      const res = await fetch('/api/v1/system-status')
+      if (res.ok) setSysStatus(await res.json())
+    } catch { /* ignore */ }
   }
 
   const fetchDeliveryDashboard = async () => {
     try {
-      const res = await axios.get('/api/v1/delivery/dashboard')
-      setDeliveryDashboard(res.data)
-    } catch (err) {
-      // silent
-    }
+      const res = await fetch('/api/v1/delivery/dashboard')
+      if (res.ok) setDeliveryDashboard(await res.json())
+    } catch { /* ignore */ }
   }
 
-  const totalWeightKg = orders.reduce((sum, order) => sum + (parseFloat(order.weight) || 0), 0)
+  const totalWeightKg = orders.reduce((sum, o) => sum + (parseFloat(o.weight) || 0), 0)
   const totalWeightTons = (totalWeightKg / 1000).toFixed(2)
-  const totalVehiclesUsed = routes.length
-  const totalStops = routes.reduce((sum, route) => sum + route.stops.length, 0)
+  const totalStops = routes.reduce((sum, r) => sum + (r.stops?.length || 0), 0)
 
-  // Calculate zone distribution
-  const zoneCounts = {}
-  orders.forEach(order => {
-    const zone = order.zone || 'ไม่ระบุ'
-    zoneCounts[zone] = (zoneCounts[zone] || 0) + 1
-  })
+  const zoneCounts = useMemo(() => {
+    const counts = {}
+    orders.forEach((o) => {
+      const zone = o.zone || 'ไม่ระบุ'
+      counts[zone] = (counts[zone] || 0) + 1
+    })
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5)
+  }, [orders])
 
-  const topZones = Object.entries(zoneCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
+  const stats = [
+    { label: 'ออเดอร์ทั้งหมด', value: orders.length, unit: 'รายการ', icon: Package, color: 'text-blue-600', bg: 'bg-blue-50' },
+    { label: 'รถที่จัดคิวแล้ว', value: routes.length, unit: 'คัน', icon: Truck, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+    { label: 'จุดจัดส่ง', value: totalStops || orders.length, unit: 'จุด', icon: MapPin, color: 'text-amber-600', bg: 'bg-amber-50' },
+    { label: 'น้ำหนักรวม', value: totalWeightTons, unit: 'ตัน', icon: Scale, color: 'text-purple-600', bg: 'bg-purple-50' },
+  ]
 
   return (
-    <div className="dashboard-wrapper">
-      {/* Header Banner */}
-      <div className="dashboard-hero">
-        <div className="hero-text">
-          <h2>🚚 ระบบบริหารจัดการขนส่งและวางแผนเส้นทาง (Route Optimization)</h2>
-          <p>ประมวลผลอ่านไฟล์ PDF Express ERP แปลงพิกัดภูมิศาสตร์ และคำนวณลำดับจุดส่งอัตโนมัติ</p>
-        </div>
-        <div className="hero-badges" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <NotificationPanel />
-          <span className={`status-pill ${sysStatus?.google_maps_api === 'active' ? 'green' : 'amber'}`}>
-            {sysStatus?.google_maps_api === 'active' ? '🟢 Google Maps API: Active' : '🟡 Smart Geocoding: Active'}
-          </span>
-        </div>
-      </div>
-
-      {/* Metric Stat Cards */}
-      <div className="stats-grid">
-        <div className="stat-card blue-card" onClick={() => onNavigate('orders')}>
-          <div className="stat-icon-wrapper blue-icon">📦</div>
-          <div className="stat-info">
-            <h3>{orders.length} <span className="stat-unit">รายการ</span></h3>
-            <p>ออเดอร์ในระบบทั้งหมด</p>
-          </div>
-          <div className="stat-arrow">→</div>
-        </div>
-
-        <div className="stat-card green-card" onClick={() => onNavigate('routes')}>
-          <div className="stat-icon-wrapper green-icon">🚚</div>
-          <div className="stat-info">
-            <h3>{totalVehiclesUsed} <span className="stat-unit">คัน</span></h3>
-            <p>รถที่ถูกจัดคิวส่งของ</p>
-          </div>
-          <div className="stat-arrow">→</div>
-        </div>
-
-        <div className="stat-card orange-card">
-          <div className="stat-icon-wrapper orange-icon">📍</div>
-          <div className="stat-info">
-            <h3>{totalStops || orders.length} <span className="stat-unit">จุด</span></h3>
-            <p>จุดจัดส่งสินค้าจำแนกตามโซน</p>
-          </div>
-        </div>
-
-        <div className="stat-card purple-card">
-          <div className="stat-icon-wrapper purple-icon">⚖️</div>
-          <div className="stat-info">
-            <h3>{totalWeightTons} <span className="stat-unit">ตัน</span></h3>
-            <p>น้ำหนักรวมสินค้า ({totalWeightKg.toLocaleString()} kg)</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Grid: Zone Distribution & Fleet Overview */}
-      <div className="dashboard-main-grid">
-        {/* Zone Distribution Card */}
-        <div className="dash-card">
-          <div className="card-header-flex">
-            <h3>📍 การกระจายจุดส่งตามเขต/โซน (Top Zones)</h3>
-            <span className="badge-pill">{Object.keys(zoneCounts).length} โซนทั้งหมด</span>
-          </div>
-
-          {topZones.length > 0 ? (
-            <div className="zone-bars-list">
-              {topZones.map(([zone, count], idx) => {
-                const percent = Math.round((count / orders.length) * 100)
-                return (
-                  <div key={idx} className="zone-bar-item">
-                    <div className="zone-bar-info">
-                      <span className="zone-name">📍 {zone}</span>
-                      <span className="zone-count">{count} ออเดอร์ ({percent}%)</span>
-                    </div>
-                    <div className="zone-progress-bg">
-                      <div
-                        className="zone-progress-fill"
-                        style={{ width: `${percent}%`, backgroundColor: getZoneColor(idx) }}
-                      ></div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <div className="dash-empty-state">
-              <span className="empty-icon">🗺️</span>
-              <p>ยังไม่มีข้อมูลโซน — อัปโหลดไฟล์ PDF เพื่อเริ่มวิเคราะห์</p>
-            </div>
-          )}
-        </div>
-
-        {/* Fleet Dispatch Status Card */}
-        <div className="dash-card">
-          <div className="card-header-flex">
-            <h3>🚚 สถานะการจัดคิวรถ (Fleet Utilization)</h3>
-            <button className="text-btn" onClick={() => onNavigate('vehicles')}>
-              จัดการรถ ⚙️
-            </button>
-          </div>
-
-          {routes.length > 0 ? (
-            <div className="fleet-dispatch-list">
-              {routes.map((route, idx) => {
-                const maxCap = route.capacity || 3750
-                const loadPct = Math.round((route.total_weight / maxCap) * 100)
-                return (
-                  <div key={idx} className="dispatch-item">
-                    <div className="dispatch-header">
-                      <span className="dispatch-title">🚛 {route.name || `คันที่ ${route.vehicle_id}`}</span>
-                      <span className="dispatch-capacity">{route.total_weight} / {maxCap} kg ({loadPct}%)</span>
-                    </div>
-                    <div className="dispatch-sub">
-                      <span>👤 {route.driver || 'ไม่ระบุคนขับ'}</span>
-                      <span>📍 {route.stops.length} จุดส่ง</span>
-                    </div>
-                    <div className="dispatch-progress-bg">
-                      <div
-                        className={`dispatch-progress-fill ${loadPct > 90 ? 'overload' : ''}`}
-                        style={{ width: `${loadPct}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <div className="dash-empty-state">
-              <span className="empty-icon">🚛</span>
-              <p>ยังไม่ได้จัดเส้นทาง — คลิก "คำนวณเส้นทาง" เพื่อจัดสรรคิวรถ</p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Quick Action Panels */}
-      <div className="quick-actions-panel">
-        <h3>⚡ ทางลัดการใช้งาน (Quick Actions)</h3>
-        <div className="quick-grid">
-          <div className="quick-card" onClick={() => onNavigate('upload')}>
-            <div className="quick-icon-bg indigo">📁</div>
-            <div className="quick-info">
-              <h4>อัปโหลดไฟล์ PDF ใบสั่งขาย</h4>
-              <p>รองรับ Express PDF หลายไฟล์พร้อมกัน ระบบซ่อมคำไทยให้อัตโนมัติ</p>
-            </div>
-          </div>
-
-          <div className="quick-card" onClick={() => onNavigate('orders')}>
-            <div className="quick-icon-bg emerald">📋</div>
-            <div className="quick-info">
-              <h4>ตรวจสอบรายการสั่งซื้อ ({orders.length})</h4>
-              <p>ดูรายการสินค้า น้ำหนัก และตำแหน่งที่ตั้งลูกค้าบนแผนที่</p>
-            </div>
-          </div>
-
-          <div className="quick-card" onClick={() => onNavigate('vehicles')}>
-            <div className="quick-icon-bg amber">⚙️</div>
-            <div className="quick-info">
-              <h4>จัดการ fleet รถขนส่ง</h4>
-              <p>ปรับเปลี่ยนทะเบียนคนขับ ปรับความจุสูงสุด 1.8 - 3.75 ตัน</p>
-            </div>
-          </div>
-
-          <div className="quick-card" onClick={() => onNavigate('driver')}>
-            <div className="quick-icon-bg blue">📱</div>
-            <div className="quick-info">
-              <h4>Driver Mobile</h4>
-              <p>อัปเดตสถานะจัดส่งแบบ real-time สำหรับคนขับรถ</p>
-            </div>
-          </div>
-
-          <div className="quick-card" onClick={() => onNavigate('load-balance')}>
-            <div className="quick-icon-bg purple">⚖️</div>
-            <div className="quick-info">
-              <h4>Load Balancing</h4>
-              <p>วิเคราะห์และกระจายภาระระหว่างรถขนส่งอัตโนมัติ</p>
-            </div>
-          </div>
-
-          {onClearData && (
-            <div className="quick-card danger" onClick={onClearData} style={{ cursor: 'pointer', border: '1px solid #fecdd3' }}>
-              <div className="quick-icon-bg rose" style={{ background: '#ffe4e6', color: '#e11d48' }}>🗑️</div>
-              <div className="quick-info">
-                <h4 style={{ color: '#e11d48' }}>รีเซ็ตข้อมูลระบบทั้งหมด</h4>
-                <p>ล้างข้อมูลออเดอร์ แผนจัดส่ง และ fleet กลับเป็นค่าเริ่มต้น</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Delivery Status Section */}
-      {deliveryDashboard?.has_plan && deliveryDashboard.summary && (
-        <div className="dash-card" style={{ margin: '20px' }}>
-          <div className="card-header-flex">
-            <h3>📦 สถานะการจัดส่งวันนี้</h3>
-            <button className="text-btn" onClick={() => onNavigate('driver')}>
-              Driver Mobile 📱
-            </button>
-          </div>
-          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '16px' }}>
-            {Object.entries({
-              'delivered': { label: 'ส่งสำเร็จ', icon: '✅', color: STATUS_COLORS.DELIVERED },
-              'in_transit': { label: 'กำลังขนส่ง', icon: '🚚', color: STATUS_COLORS.IN_TRANSIT },
-              'arrived': { label: 'ถึงจุดส่ง', icon: '📍', color: STATUS_COLORS.ARRIVED },
-              'pending': { label: 'รอจัดส่ง', icon: '⏳', color: STATUS_COLORS.PENDING },
-              'failed': { label: 'ไม่สำเร็จ', icon: '❌', color: STATUS_COLORS.FAILED },
-              'partial': { label: 'ส่งบางส่วน', icon: '⚠️', color: STATUS_COLORS.PARTIAL },
-            }).map(([key, cfg]) => (
-              <div key={key} style={{
-                flex: '1 1 120px',
-                background: `${cfg.color}10`,
-                border: `1px solid ${cfg.color}30`,
-                borderRadius: '12px',
-                padding: '12px',
-                textAlign: 'center',
-              }}>
-                <div style={{ fontSize: '24px', fontWeight: 800, color: cfg.color }}>
-                  {deliveryDashboard.summary[key] || 0}
-                </div>
-                <div style={{ fontSize: '12px', color: cfg.color, fontWeight: 600 }}>
-                  {cfg.icon} {cfg.label}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div style={{ background: '#e2e8f0', borderRadius: '6px', height: '10px', overflow: 'hidden' }}>
-            <div style={{
-              width: `${deliveryDashboard.summary.completion_pct || 0}%`,
-              background: 'linear-gradient(90deg, #10b981, #34d399)',
-              height: '100%',
-              borderRadius: '6px',
-              transition: 'width 0.5s ease',
-            }} />
-          </div>
-          <p style={{ fontSize: '13px', color: '#64748b', marginTop: '6px', fontWeight: 600 }}>
-            {deliveryDashboard.summary.completion_pct || 0}% เสร็จสิ้น
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">แดชบอร์ด</h1>
+          <p className="text-sm text-muted-foreground">
+            ระบบบริหารจัดการขนส่งและวางแผนเส้นทาง
           </p>
         </div>
+        <div className="flex items-center gap-3">
+          <NotificationPanel />
+          <Badge variant={sysStatus?.google_maps_api === 'active' ? 'success' : 'warning'}>
+            {sysStatus?.google_maps_api === 'active' ? 'Google Maps API: Active' : 'Smart Geocoding: Active'}
+          </Badge>
+        </div>
+      </div>
+
+      {/* Stat Cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {stats.map((s) => {
+          const Icon = s.icon
+          return (
+            <Card
+              key={s.label}
+              className="cursor-pointer transition-shadow hover:shadow-md"
+              onClick={() => navigate(s.label.includes('ออเดอร์') ? '/orders' : s.label.includes('รถ') ? '/routes' : '/orders')}
+            >
+              <CardContent className="flex items-center gap-4 p-6">
+                <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${s.bg}`}>
+                  <Icon className={`h-6 w-6 ${s.color}`} />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">
+                    {s.value} <span className="text-sm font-normal text-muted-foreground">{s.unit}</span>
+                  </p>
+                  <p className="text-sm text-muted-foreground">{s.label}</p>
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })}
+      </div>
+
+      {/* Zone + Fleet */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-lg">การกระจายจุดส่งตามโซน</CardTitle>
+            <Badge variant="secondary">{Object.keys(zoneCounts).length} โซน</Badge>
+          </CardHeader>
+          <CardContent>
+            {zoneCounts.length > 0 ? (
+              <div className="space-y-4">
+                {zoneCounts.map(([zone, count], idx) => {
+                  const percent = Math.round((count / orders.length) * 100)
+                  const colors = ['bg-blue-500', 'bg-emerald-500', 'bg-amber-500', 'bg-purple-500', 'bg-sky-500']
+                  return (
+                    <div key={idx} className="space-y-1.5">
+                      <div className="flex justify-between text-sm">
+                        <span className="font-medium">{zone}</span>
+                        <span className="text-muted-foreground">{count} ออเดอร์ ({percent}%)</span>
+                      </div>
+                      <Progress value={percent} indicatorClassName={colors[idx % colors.length]} />
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-2 py-8 text-center text-muted-foreground">
+                <MapPin className="h-10 w-10 opacity-40" />
+                <p className="text-sm">ยังไม่มีข้อมูลโซน — อัปโหลดไฟล์ PDF เพื่อเริ่มวิเคราะห์</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-lg">สถานะการจัดคิวรถ</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => navigate('/vehicles')}>
+              <Settings className="h-4 w-4" />
+              จัดการรถ
+            </Button>
+          </CardHeader>
+          <CardContent>
+            {routes.length > 0 ? (
+              <div className="space-y-4">
+                {routes.map((route, idx) => {
+                  const maxCap = route.capacity || 3750
+                  const loadPct = Math.round((route.total_weight / maxCap) * 100)
+                  const barColor = loadPct > 90 ? 'bg-red-500' : loadPct > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+                  return (
+                    <div key={idx} className="space-y-1.5">
+                      <div className="flex justify-between text-sm">
+                        <span className="font-medium">{route.name || `คันที่ ${route.vehicle_id}`}</span>
+                        <span className="text-muted-foreground">
+                          {route.total_weight} / {maxCap} kg ({loadPct}%)
+                        </span>
+                      </div>
+                      <Progress value={loadPct} indicatorClassName={barColor} />
+                      <p className="text-xs text-muted-foreground">
+                        คนขับ: {route.driver || 'ไม่ระบุ'} · {route.stops?.length || 0} จุดส่ง
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-2 py-8 text-center text-muted-foreground">
+                <Truck className="h-10 w-10 opacity-40" />
+                <p className="text-sm">ยังไม่ได้จัดเส้นทาง — คลิก "คำนวณเส้นทาง" เพื่อจัดสรรคิวรถ</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Quick Actions */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">ทางลัดการใช้งาน</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {QUICK_ACTIONS.map((action) => {
+              const Icon = action.icon
+              return (
+                <button
+                  key={action.id}
+                  onClick={() => navigate(`/${action.id}`)}
+                  className="flex items-start gap-3 rounded-lg border p-4 text-left transition-colors hover:bg-accent"
+                >
+                  <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${action.color} text-white`}>
+                    <Icon className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold">{action.label}</p>
+                    <p className="text-xs text-muted-foreground">{action.desc}</p>
+                  </div>
+                </button>
+              )
+            })}
+            <PermissionGate role={user?.role} permission="clear_data">
+              <button
+                onClick={() => setConfirmClearOpen(true)}
+                className="flex items-start gap-3 rounded-lg border border-red-200 p-4 text-left transition-colors hover:bg-red-50"
+              >
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-500 text-white">
+                  <Trash2 className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-red-600">รีเซ็ตข้อมูลระบบ</p>
+                  <p className="text-xs text-muted-foreground">ล้างข้อมูลออเดอร์ แผนจัดส่ง และ fleet</p>
+                </div>
+              </button>
+            </PermissionGate>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Delivery Status */}
+      {deliveryDashboard?.has_plan && deliveryDashboard.summary && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-lg">สถานะการจัดส่งวันนี้</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => navigate('/driver')}>
+              <Smartphone className="h-4 w-4" />
+              Driver Mobile
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              {Object.entries({
+                delivered: 'delivered',
+                in_transit: 'in_transit',
+                arrived: 'arrived',
+                pending: 'pending',
+                failed: 'failed',
+                partial: 'partial',
+              }).map(([key, statusKey]) => {
+                const cfg = DELIVERY_STATUS_CONFIG[statusKey.toUpperCase()] || DELIVERY_STATUS_CONFIG.PENDING
+                const count = deliveryDashboard.summary[key] || 0
+                return (
+                  <div
+                    key={key}
+                    className="rounded-lg border p-3 text-center"
+                    style={{ backgroundColor: `${cfg.color}12`, borderColor: `${cfg.color}30` }}
+                  >
+                    <p className="text-2xl font-bold" style={{ color: cfg.color }}>{count}</p>
+                    <p className="text-xs font-medium" style={{ color: cfg.color }}>{cfg.label}</p>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="mt-4 space-y-1.5">
+              <Progress value={deliveryDashboard.summary.completion_pct || 0} indicatorClassName="bg-emerald-500" />
+              <p className="text-center text-sm font-medium text-muted-foreground">
+                {deliveryDashboard.summary.completion_pct || 0}% เสร็จสิ้น
+              </p>
+            </div>
+          </CardContent>
+        </Card>
       )}
+
+      <ConfirmDialog
+        open={confirmClearOpen}
+        onOpenChange={setConfirmClearOpen}
+        title="รีเซ็ตข้อมูลระบบ"
+        description="คุณแน่ใจหรือไม่ว่าต้องการล้างข้อมูลออเดอร์ แผนจัดส่ง และ fleet ทั้งหมด?"
+        confirmLabel="ล้างข้อมูลทั้งหมด"
+        onConfirm={() => {
+          setConfirmClearOpen(false)
+          clearAllData()
+        }}
+      />
     </div>
   )
-}
-
-function getZoneColor(index) {
-  const colors = ['#6366f1', '#10b981', '#f59e0b', '#8b5cf6', '#3b82f6']
-  return colors[index % colors.length]
 }
 
 export default Dashboard

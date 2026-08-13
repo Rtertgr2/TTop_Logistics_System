@@ -11,6 +11,33 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Module-level cache for product map (avoid loading ALL products on every PDF page)
+_product_map_cache: dict = {}
+
+
+def _load_product_map() -> dict:
+    """โหลด Product table ทั้งหมดมา cache ใน memory (เรียกครั้งเดียว)"""
+    if _product_map_cache:
+        return _product_map_cache
+
+    import re as _re
+    from database.db import SessionLocal
+    from database.models import Product
+
+    def _norm(s: str) -> str:
+        return _re.sub(r'[\s\-_]+', ' ', s.strip().lower())
+
+    db = SessionLocal()
+    try:
+        all_products = db.query(Product).all()
+        for p in all_products:
+            _product_map_cache[_norm(p.product_code)] = p
+            _product_map_cache[_norm(p.product_name)] = p
+    finally:
+        db.close()
+
+    return _product_map_cache
+
 
 def _lookup_product_weights(products: list[dict]) -> tuple[list[dict], list[str]]:
     """
@@ -21,22 +48,13 @@ def _lookup_product_weights(products: list[dict]) -> tuple[list[dict], list[str]
             - products_with_weights: list of products with item_weight calculated
             - missing_products: list of product codes/names that were not found
     """
-    from database.db import SessionLocal
-    from database.models import Product
-
     def _norm(s: str) -> str:
         # ลบช่องว่าง/ขีดเพื่อเทียบชื่อแบบยืดหยุ่น (เช่น "MATE - จืด" ↔ "MATE จืด")
         return re.sub(r'[\s\-_]+', ' ', s.strip().lower())
 
-    db = SessionLocal()
+    product_map = _load_product_map()
+    db = None
     try:
-        # โหลดสินค้าทั้งหมดจาก Product table (cache ใน memory)
-        all_products = db.query(Product).all()
-        product_map = {}
-        for p in all_products:
-            # เก็บทั้ง product_code และ product_name เป็น key
-            product_map[_norm(p.product_code)] = p
-            product_map[_norm(p.product_name)] = p
         
         products_with_weights = []
         missing_products = []
@@ -73,9 +91,9 @@ def _lookup_product_weights(products: list[dict]) -> tuple[list[dict], list[str]
                 })
         
         return products_with_weights, missing_products
-        
-    finally:
-        db.close()
+    except Exception as e:
+        logger.error(f"Product lookup failed: {e}")
+        return products, []
 
 
 # ── Template Config Loader (1.1.11) ──────────────────────────────

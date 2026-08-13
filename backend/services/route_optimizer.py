@@ -6,8 +6,9 @@ from datetime import datetime, timedelta
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
 from database.db import get_vehicles_from_db
-from config import DEPOT_LAT, DEPOT_LNG, SOLVE_TIMEOUT_SECONDS, MAX_ROUTE_DISTANCE_KM, MAX_STOPS_BEFORE_CLUSTER, AVG_SPEED_KMH
+from config import DEPOT_LAT, DEPOT_LNG, DEPOT_ADDRESS, SOLVE_TIMEOUT_SECONDS, MAX_ROUTE_DISTANCE_KM, MAX_STOPS_BEFORE_CLUSTER, AVG_SPEED_KMH, PRIORITY_TIME_COST_WEIGHT, PRIORITY_STOP_COST_WEIGHT
 from services.distance_matrix_real import get_distance_matrix_real
+from services.geo_utils import haversine_km
 
 logger = logging.getLogger(__name__)
 
@@ -103,16 +104,6 @@ def generate_google_maps_link(stops: list[dict], depot: dict = None) -> str:
     return "https://www.google.com/maps/dir/" + "/".join(points)
 
 
-def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """ระยะทาง Haversine (km)"""
-    R = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlng = math.radians(lng2 - lng1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2
-    a = max(0.0, min(1.0, a))  # clamp to valid domain (rounding can push it slightly out of range)
-    return R * 2 * math.asin(math.sqrt(a))
-
-
 def _distance_matrix_to_int_meters(matrix: list[list[float]]) -> list[list[int]]:
     """แปลง distance matrix (km float) เป็น int (เมตร)"""
     max_int_meters = 10**9  # 1,000,000 km cap — ป้องกัน OverflowError จาก inf/NaN
@@ -165,7 +156,7 @@ def _kmeans_cluster(points: list[dict], k: int, depot_lat: float, depot_lng: flo
             best_c = 0
             best_d = float("inf")
             for c in range(k):
-                d = _haversine_km(p["lat"], p["lng"], centroids_lat[c], centroids_lng[c])
+                d = haversine_km(p["lat"], p["lng"], centroids_lat[c], centroids_lng[c])
                 if d < best_d:
                     best_d = d
                     best_c = c
@@ -275,9 +266,11 @@ def _calculate_eta(stops: list[dict], distance_matrix_int: list[list[int]], depo
     if not stops:
         return stops
 
-    from datetime import datetime, timedelta
-
-    start_time = datetime.now().replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    now = datetime.now()
+    start_time = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    # ถ้าเลย start_hour แล้ว ให้ใช้วันพรุ่งนี้
+    if now.hour >= start_hour:
+        start_time += timedelta(days=1)
     cumulative_minutes = 0.0
 
     prev_lat, prev_lng = depot_lat, depot_lng
@@ -286,7 +279,7 @@ def _calculate_eta(stops: list[dict], distance_matrix_int: list[list[int]], depo
         # คำนวณระยะทางจากจุดก่อนหน้า
         s_lat = stop.get("lat", depot_lat)
         s_lng = stop.get("lng", depot_lng)
-        dist_km = _haversine_km(prev_lat, prev_lng, s_lat, s_lng)
+        dist_km = haversine_km(prev_lat, prev_lng, s_lat, s_lng)
 
         # เวลาเดินทาง (นาที) = distance / speed * 60
         travel_minutes = (dist_km / AVG_SPEED_KMH) * 60 if dist_km > 0 else 0
@@ -366,7 +359,23 @@ def _solve_vrp(
         return distance_matrix_int[from_node][to_node]
 
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+    # ── Combined arc-cost objective (priority order) ──────────────────
+    # Priority 1 (weight) = HARD capacity constraint (handled by Capacity dimension below).
+    # Priority 2 (time & distance) = dominant term in the cost.
+    # Priority 3 (number of stops) = small per-stop penalty (tertiary).
+    # cost = distance_m + TIME_COST_WEIGHT * travel_minutes + STOP_COST_WEIGHT
+    def cost_callback(from_index, to_index):
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+        dist_m = distance_matrix_int[from_node][to_node]
+        travel_min = dist_m / (AVG_SPEED_KMH * 1000 / 60)
+        # Penalize each customer stop once (on its outgoing edge) → minimizes #stops (tier 3)
+        stop_penalty = PRIORITY_STOP_COST_WEIGHT if from_node != depot_index else 0
+        return int(dist_m + PRIORITY_TIME_COST_WEIGHT * travel_min + stop_penalty)
+
+    cost_callback_index = routing.RegisterTransitCallback(cost_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(cost_callback_index)
 
     def demand_callback(from_index):
         from_node = manager.IndexToNode(from_index)
@@ -499,7 +508,13 @@ def _extract_routes(
             # 1.4.7 — คำนวณ ETA
             stops = _calculate_eta(stops, distance_matrix_int, depot_lat, depot_lng)
 
-            maps_link = generate_google_maps_link(stops, None)
+            depot = {
+                "lat": depot_lat,
+                "lng": depot_lng,
+                "address": DEPOT_ADDRESS,
+            }
+
+            maps_link = generate_google_maps_link(stops, depot)
 
             routes.append({
                 "vehicle_id": vehicle.get("id", vehicle_idx + 1),
@@ -511,6 +526,7 @@ def _extract_routes(
                 "total_weight": total_weight,
                 "total_distance_km": round(total_distance_m / 1000, 2),
                 "google_maps_link": maps_link,
+                "depot": depot,
             })
 
     return routes
@@ -582,13 +598,19 @@ def _fallback_sweep(
             for i in range(len(all_pts)):
                 for j in range(len(all_pts)):
                     if i != j:
-                        dummy_dm[i][j] = int(_haversine_km(
+                        dummy_dm[i][j] = int(haversine_km(
                             all_pts[i].get("lat", depot_lat), all_pts[i].get("lng", depot_lng),
                             all_pts[j].get("lat", depot_lat), all_pts[j].get("lng", depot_lng),
                         ) * 1000)
             formatted = _calculate_eta(formatted, dummy_dm, depot_lat, depot_lng)
 
-            maps_link = generate_google_maps_link(formatted, None)
+            depot = {
+                "lat": depot_lat,
+                "lng": depot_lng,
+                "address": DEPOT_ADDRESS,
+            }
+
+            maps_link = generate_google_maps_link(formatted, depot)
 
             # Calculate total distance from dummy_dm
             total_dist_km = 0
@@ -608,6 +630,7 @@ def _fallback_sweep(
                 "total_weight": round(current_weight, 2),
                 "total_distance_km": round(total_dist_km, 2),
                 "google_maps_link": maps_link,
+                "depot": depot,
             })
 
     return {"routes": routes, "warnings": warnings}
@@ -628,7 +651,7 @@ def _tsp_nearest_neighbor(stops: list[dict], depot_lat: float, depot_lng: float)
         for idx, stop in enumerate(unvisited):
             s_lat = stop.get("lat", depot_lat)
             s_lng = stop.get("lng", depot_lng)
-            dist = _haversine_km(curr_lat, curr_lng, s_lat, s_lng)
+            dist = haversine_km(curr_lat, curr_lng, s_lat, s_lng)
             if dist < best_dist:
                 best_dist = dist
                 best_idx = idx
@@ -706,7 +729,7 @@ def _rebalance_routes(
                     else:
                         ref_lat = depot_lat
                         ref_lng = depot_lng
-                    dist = _haversine_km(ref_lat, ref_lng, s_lat, s_lng)
+                    dist = haversine_km(ref_lat, ref_lng, s_lat, s_lng)
                     if dist < best_dist:
                         best_dist = dist
                         best_stop = stop
@@ -771,7 +794,7 @@ def _rebalance_routes(
                         ref_lat, ref_lng = depot_lat, depot_lng
                     s_lat = stop_candidate.get("lat", depot_lat)
                     s_lng = stop_candidate.get("lng", depot_lng)
-                    dist = _haversine_km(ref_lat, ref_lng, s_lat, s_lng)
+                    dist = haversine_km(ref_lat, ref_lng, s_lat, s_lng)
                     if dist < best_dist:
                         best_dist = dist
                         best_target = target
@@ -848,14 +871,13 @@ def optimize_routes(
     คืนค่า dict: { "routes": [...], "warnings": [...], "clustered": bool }
     """
     if not orders:
-        deferred_weight = sum(float(o.get("weight") or 0) for o in deferred_orders)
         return {
             "routes": [],
-            "warnings": warnings,
+            "warnings": [],
             "clustered": False,
-            "deferred_orders": deferred_orders,
-            "deferred_weight": round(deferred_weight, 2),
-            "deferred_count": len(deferred_orders),
+            "deferred_orders": [],
+            "deferred_weight": 0,
+            "deferred_count": 0,
         }
 
     if vehicles is None:
@@ -864,14 +886,13 @@ def optimize_routes(
     num_vehicles = len(vehicles)
     if num_vehicles == 0:
         logger.warning("ไม่มีรถที่เปิดใช้งาน")
-        deferred_weight = sum(float(o.get("weight") or 0) for o in deferred_orders)
         return {
             "routes": [],
-            "warnings": ["ไม่มีรถที่เปิดใช้งาน"] + warnings,
+            "warnings": ["ไม่มีรถที่เปิดใช้งาน"],
             "clustered": False,
-            "deferred_orders": deferred_orders,
-            "deferred_weight": round(deferred_weight, 2),
-            "deferred_count": len(deferred_orders),
+            "deferred_orders": [],
+            "deferred_weight": 0,
+            "deferred_count": 0,
         }
 
     depot_lat = depot.get("lat", DEPOT_LAT) if depot else DEPOT_LAT

@@ -3,7 +3,8 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.data_validator import validate_orders
-from services.distance_matrix import _haversine, get_distance_matrix
+from services.geo_utils import haversine_km
+from services.distance_matrix_real import get_distance_matrix_real as get_distance_matrix
 from services.route_optimizer import optimize_routes
 
 
@@ -55,16 +56,16 @@ class TestDataValidator:
 
 class TestHaversine:
     def test_same_point(self):
-        assert _haversine(13.7, 100.4, 13.7, 100.4) == 0.0
+        assert haversine_km(13.7, 100.4, 13.7, 100.4) == 0.0
 
     def test_known_distance(self):
         # Bangkok to Chiang Mai ~580km
-        d = _haversine(13.7563, 100.5018, 18.7883, 98.9853)
+        d = haversine_km(13.7563, 100.5018, 18.7883, 98.9853)
         assert 550 < d < 620
 
     def test_symmetry(self):
-        d1 = _haversine(13.7, 100.4, 14.0, 100.5)
-        d2 = _haversine(14.0, 100.5, 13.7, 100.4)
+        d1 = haversine_km(13.7, 100.4, 14.0, 100.5)
+        d2 = haversine_km(14.0, 100.5, 13.7, 100.4)
         assert abs(d1 - d2) < 0.01
 
 

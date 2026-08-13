@@ -26,8 +26,7 @@ def get_google_maps_api_key() -> str:
     return _CACHED_API_KEY
 
 
-# Cache for online place searches to eliminate redundant network requests
-GEOCODE_CACHE = {}
+# Cache for online place searches (Redis-backed with in-memory fallback)
 _GEOCODE_CACHE_MAX_SIZE = 500
 
 # Thailand Bounding Box (Lat 5.0N - 21.0N, Lon 97.0E - 106.0E)
@@ -108,13 +107,14 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
     if not address or len(address.strip()) < 2:
         return None
 
-    if address in GEOCODE_CACHE:
-        return GEOCODE_CACHE[address]
+    # Try Redis cache first
+    from services.cache import get_cached, set_cached
+    cached = get_cached(f"geo:{address}")
+    if cached is not None:
+        return tuple(cached)  # Convert list back to tuple
 
-    # Evict oldest entry if cache is full
-    if len(GEOCODE_CACHE) >= _GEOCODE_CACHE_MAX_SIZE:
-        oldest_key = next(iter(GEOCODE_CACHE))
-        del GEOCODE_CACHE[oldest_key]
+    # Evict oldest entry if cache is full (in-memory fallback)
+    # (Redis handles its own TTL-based eviction)
 
     # ทำความสะอาดที่อยู่ภาษาไทย
     clean = address.replace('ถ.', 'ถนน').replace('ซ.', 'ซอย ').replace('จ.', 'จังหวัด ')
@@ -144,7 +144,7 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
                     display_name = f"{name} ({formatted})" if name and name not in formatted else formatted
                     if is_in_thailand(lat, lng):
                         result = (lat, lng, display_name, "google_places", 100.0)
-                        GEOCODE_CACHE[address] = result
+                        set_cached(f"geo:{address}", list(result))
                         logger.info(f"🌟 Google Places POI Match (Score=100%): '{clean[:50]}' => {lat}, {lng}")
                         return result
         except Exception as e:
@@ -179,7 +179,7 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
 
                     formatted = first.get("formatted_address", clean)
                     result = (lat, lng, formatted, "google", score)
-                    GEOCODE_CACHE[address] = result
+                    set_cached(f"geo:{address}", list(result))
                     logger.info(f"🎯 Google Maps Match ({location_type}, Score={score}%): '{clean[:50]}' => {lat}, {lng}")
                     return result
         except Exception as e:
@@ -205,7 +205,7 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
                     if not is_in_thailand(lat, lng):
                         score = 0.0
                     result = (lat, lng, display_name, "esri", score)
-                    GEOCODE_CACHE[address] = result
+                    set_cached(f"geo:{address}", list(result))
                     logger.info(f"📍 Esri Match (Score={score}%): '{clean[:50]}' => {lat}, {lng}")
                     return result
     except Exception as e:
@@ -224,7 +224,7 @@ def search_place_online(address: str) -> tuple[float, float, str, str, float] | 
                 display_name = data[0].get("display_name", clean)
                 score = 60.0 if is_in_thailand(lat, lng) else 0.0
                 result = (lat, lng, display_name, "nominatim", score)
-                GEOCODE_CACHE[address] = result
+                set_cached(f"geo:{address}", list(result))
                 logger.info(f"🗺️ Nominatim Match: '{clean[:50]}' => {lat}, {lng}")
                 return result
     except Exception as e:

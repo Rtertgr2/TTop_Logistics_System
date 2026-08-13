@@ -38,6 +38,14 @@ MAX_ROUTE_DISTANCE_KM = max(int(os.getenv("MAX_ROUTE_DISTANCE_KM", "200")), 1)
 MAX_STOPS_BEFORE_CLUSTER = max(int(os.getenv("MAX_STOPS_BEFORE_CLUSTER", "200")), 1)
 AVG_SPEED_KMH = max(int(os.getenv("AVG_SPEED_KMH", "30")), 1)
 
+# Route optimization priority weights (objective cost = distance_m + TIME_COST_WEIGHT * travel_min + STOP_COST_WEIGHT)
+# Priority order: (1) Weight = HARD capacity constraint (never exceeded),
+#                  (2) Time & Distance = primary objective,
+#                  (3) Number of stops = tertiary objective (small penalty)
+# Tune via env vars to shift emphasis between tiers 2 and 3.
+PRIORITY_TIME_COST_WEIGHT = max(int(os.getenv("PRIORITY_TIME_COST_WEIGHT", "500")), 0)
+PRIORITY_STOP_COST_WEIGHT = max(int(os.getenv("PRIORITY_STOP_COST_WEIGHT", "100")), 0)
+
 # Redis Cache Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
