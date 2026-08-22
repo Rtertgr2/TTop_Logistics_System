@@ -112,6 +112,26 @@ function FileUpload({ onSuccess }) {
         },
       })
       const data = response.data
+      // ตรวจสอบกรณีสินค้าไม่มีในระบบ (backend ตอบ 200 พร้อม errors.missing_products)
+      const missingFromErrors = (data.errors || []).find((e) => e.missing_products && e.missing_products.length > 0)
+      if (missingFromErrors) {
+        setMissingProducts(missingFromErrors)
+        setProductInputs(
+          missingFromErrors.missing_products.map((name) => ({
+            name: name,
+            code: name.split(" - ")[0] || "",
+            weight: "",
+            unit: "กล่อง",
+          }))
+        )
+        return  // หยุด here — รอผู้ใช้กรอกน้ำหนักใน Dialog
+      }
+      // กรณีอื่นที่ backend คืน errors (เช่น File processing failed)
+      if (data.errors && data.errors.length > 0) {
+        const msgs = data.errors.map((e) => `${e.filename || ""}: ${e.error || "error"}`).join("\n")
+        setError(msgs)
+        return
+      }
       if (data.orders && data.orders.length > 0) {
         setOrders((prev) => [...prev, ...data.orders])
       }
