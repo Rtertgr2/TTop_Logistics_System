@@ -156,10 +156,79 @@ export default function DriverMobile() {
 
   const stopIdOf = (stop) => stop.id || stop.order_number
 
+  // GPS auto-arrive: ตรวจระยะห่างคนขับจากพิกัด stop ถ้าใกล้พอ → เรียก auto-arrive
+  const tryAutoArrive = (stop, onArrived) => {
+    if (!navigator.geolocation) {
+      toast.error('อุปกรณ์ไม่รองรับการระบุพิกัด — กรุณากดยืนยันมือ')
+      return
+    }
+    if (!stop?.lat || !stop?.lng) {
+      toast.error('จุดส่งนี้ยังไม่มีพิกัด — กรุณากดยืนยันมือ')
+      return
+    }
+    setLoading(true)
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords
+        const R = 6371000
+        const toRad = (d) => (d * Math.PI) / 180
+        const dLat = toRad(stop.lat - latitude)
+        const dLng = toRad(stop.lng - longitude)
+        const a =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(toRad(latitude)) * Math.cos(toRad(stop.lat)) * Math.sin(dLng / 2) ** 2
+        const dist = 2 * R * Math.asin(Math.sqrt(a))
+        if (accuracy > 100) {
+          setLoading(false)
+          toast.warning(`ความแม่นยำ GPS ${Math.round(accuracy)}m เกินเกณฑ์ — กรุณากดยืนยันมือ`)
+          return
+        }
+        if (dist > 100) {
+          setLoading(false)
+          toast.warning(`คุณอยู่ห่างจุดส่ง ${Math.round(dist)}m — กรุณาเข้าใกล้จุดส่ง`)
+          return
+        }
+        try {
+          const res = await fetch('/api/v1/delivery/auto-arrive', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              route_id: route.route_id,
+              stop_id: stopIdOf(stop),
+              lat: latitude,
+              lng: longitude,
+              accuracy_m: accuracy,
+            }),
+          })
+          if (res.ok) {
+            toast.success('ตรวจพบว่าถึงจุดส่งแล้ว (GPS)')
+            onArrived && onArrived()
+          } else {
+            toast.error('ไม่สามารถบันทึกการถึงจุดส่งอัตโนมัติได้')
+          }
+        } catch {
+          toast.error('เกิดข้อผิดพลาดในการบันทึก GPS')
+        } finally {
+          setLoading(false)
+        }
+      },
+      (err) => {
+        setLoading(false)
+        toast.error('ไม่สามารถดึงพิกัด GPS ได้: ' + err.message)
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    )
+  }
+
   const handleAction = (action) => {
     if (!selectedStop) return
     if (action.modal === 'failure') return setShowFailureModal(true)
     if (action.modal === 'partial') return setShowPartialModal(true)
+    if (action.next === 'ARRIVED') {
+      // ลอง GPS auto-arrive ก่อน ถ้าไม่ผ่านจะแจ้งให้ยืนยันมือ
+      tryAutoArrive(selectedStop, () => loadRoute(driverName))
+      return
+    }
     updateStatus(stopIdOf(selectedStop), action.next)
   }
 
