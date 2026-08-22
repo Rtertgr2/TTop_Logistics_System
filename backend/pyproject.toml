@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logistics-backend"
+version = "2.10.0"
+description = "Logistics Route Planning System Backend"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+py-modules = ["auth", "config", "main", "celery_app", "tasks", "metrics", "logging_config"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: integration tests requiring the full app",
+    "db: tests requiring a database session",
+    "external: tests that mock external APIs",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["auth", "config", "services", "database", "api", "middleware"]
+omit = ["tests/*", "*/__init__.py"]

@@ -1,0 +1,22 @@
+# Secrets
+.jwt_secret
+.env
+.env.*
+
+# Database files (PII — never bake into images)
+*.db
+data/logistics.db
+data/op_backups/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tests (not needed in runtime image)
+tests/
+
+# Dev artifacts
+*.log

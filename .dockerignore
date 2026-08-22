@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg-info
+dist
+build
+*.egg
+.eggs
+venv
+.env
+
+# Node
+node_modules
+npm-debug.log
+dist
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Data
+data/
+*.db
+
+# Logs
+*.log
+
+# Test
+.pytest_cache
+.coverage
+htmlcov

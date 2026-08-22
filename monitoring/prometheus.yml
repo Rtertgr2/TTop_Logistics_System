@@ -1,0 +1,28 @@
+# Prometheus Configuration
+# Scrapes metrics from the logistics backend API
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "logistics-backend"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          service: "logistics-backend"
+          environment: "production"
+
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: "prometheus"
+          environment: "production"
+
+  # NOTE: Celery worker and Redis do not expose Prometheus metrics natively.
+  # To monitor them, add:
+  #   - celery-exporter (https://github.com/danihodovic/celery-exporter)
+  #   - redis_exporter (https://github.com/oliver006/redis_exporter)
