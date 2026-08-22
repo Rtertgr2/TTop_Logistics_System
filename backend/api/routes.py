@@ -380,6 +380,60 @@ async def upload_multiple_files(files: list[UploadFile] = File(...), user: dict 
     }
 
 
+class BulkCreateProductsRequest(BaseModel):
+    products: list[dict] = Field(..., min_length=1, max_length=1000)
+
+
+@router.post("/products/bulk-create")
+def bulk_create_products(
+    req: BulkCreateProductsRequest,
+    user: dict = Depends(get_current_user),
+):
+    """สร้าง/อัปเดตสินค้าแบบ batch (ใช้จาก FileUpload เมื่อ PDF parser เจอสินค้าไม่มีในระบบ)"""
+    from database.db import SessionLocal
+    from database.models import Product as ProductModel
+
+    db = SessionLocal()
+    try:
+        created, updated = 0, 0
+        for p in req.products:
+            code = (p.get("product_code") or "").strip()
+            if not code:
+                continue
+            name = (p.get("product_name") or "").strip()
+            weight = float(p.get("weight") or 0)
+            existing = (
+                db.query(ProductModel)
+                .filter(ProductModel.product_code == code)
+                .first()
+            )
+            if existing:
+                existing.product_name = name or existing.product_name
+                existing.weight = weight
+                updated += 1
+            else:
+                db.add(
+                    ProductModel(
+                        product_code=code,
+                        product_name=name,
+                        weight=weight,
+                    )
+                )
+                created += 1
+        db.commit()
+        return {
+            "created": created,
+            "updated": updated,
+            "total": created + updated,
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"bulk_create_products failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save products")
+    finally:
+        db.close()
+
+
 @router.post("/plan-routes")
 def plan_routes(request: PlanRoutesRequest, user: dict = Depends(get_current_user)):
     """คำนวณเส้นทางจัดส่ง"""

@@ -6,6 +6,7 @@ Rate limiting, audit logging, security headers, CSRF protection
 import os
 import re
 import time
+import json
 import logging
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -198,23 +199,37 @@ def _mask_sensitive_data(data: str) -> str:
 
 class AuditLogMiddleware(BaseHTTPMiddleware):
     """Audit logging middleware for security events with data masking"""
-    
+
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
-        
+
         client_ip = request.client.host if request.client else "unknown"
         method = request.method
         path = request.url.path
         user_agent = request.headers.get("user-agent", "-")
-        
+
+        # Best-effort: extract username from Bearer token (no DB hit)
+        username = "-"
+        auth_hdr = request.headers.get("Authorization", "")
+        if auth_hdr.startswith("Bearer "):
+            try:
+                import base64
+                payload_b64 = auth_hdr[7:].split(".")[1]
+                # pad for base64 decode
+                payload_b64 += "=" * (-len(payload_b64) % 4)
+                payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+                username = payload.get("sub") or payload.get("user_id") or "-"
+            except Exception:
+                username = "-"
+
         response = await call_next(request)
-        
+
         duration = time.time() - start_time
-        
+
         # Build audit log entry
         status = response.status_code
-        log_entry = f"{client_ip} {method} {path} {status} {duration:.3f}s"
-        
+        log_entry = f"{client_ip} user={username} {method} {path} {status} {duration:.3f}s"
+
         # Log security events with appropriate severity
         if status == 401:
             logger.warning(f"AUTH_FAILED: {log_entry}")
@@ -224,7 +239,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             logger.warning(f"RATE_LIMITED: {log_entry}")
         elif status >= 500:
             logger.error(f"SERVER_ERROR: {log_entry}")
-        
+
         # Log all API calls with masked data
         if path.startswith("/api/"):
             # Mask any sensitive query params
@@ -234,11 +249,11 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 logger.info(f"API_CALL: {log_entry} query={masked_query}")
             else:
                 logger.info(f"API_CALL: {log_entry}")
-        
+
         # Log mutating operations for audit trail
         if method in ("POST", "PUT", "DELETE") and path.startswith("/api/"):
-            logger.info(f"AUDIT: {client_ip} {method} {path} → {status} ({duration:.3f}s)")
-        
+            logger.info(f"AUDIT: {log_entry}")
+
         return response
 
 
