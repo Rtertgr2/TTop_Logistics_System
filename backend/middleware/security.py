@@ -6,7 +6,6 @@ Rate limiting, audit logging, security headers, CSRF protection
 import os
 import re
 import time
-import json
 import logging
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -208,17 +207,14 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         user_agent = request.headers.get("user-agent", "-")
 
-        # Best-effort: extract username from Bearer token (no DB hit)
+        # Best-effort: extract username from Bearer token (verified signature)
         username = "-"
         auth_hdr = request.headers.get("Authorization", "")
         if auth_hdr.startswith("Bearer "):
             try:
-                import base64
-                payload_b64 = auth_hdr[7:].split(".")[1]
-                # pad for base64 decode
-                payload_b64 += "=" * (-len(payload_b64) % 4)
-                payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                username = payload.get("sub") or payload.get("user_id") or "-"
+                from auth import verify_jwt_token
+                payload = verify_jwt_token(auth_hdr[7:])
+                username = payload.get("sub") or "-"
             except Exception:
                 username = "-"
 

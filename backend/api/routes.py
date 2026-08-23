@@ -387,7 +387,7 @@ class BulkCreateProductsRequest(BaseModel):
 @router.post("/products/bulk-create")
 def bulk_create_products(
     req: BulkCreateProductsRequest,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_role(["admin", "dispatcher"])),
 ):
     """สร้าง/อัปเดตสินค้าแบบ batch (ใช้จาก FileUpload เมื่อ PDF parser เจอสินค้าไม่มีในระบบ)"""
     from database.db import SessionLocal

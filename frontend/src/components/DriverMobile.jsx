@@ -158,6 +158,10 @@ export default function DriverMobile() {
 
   // GPS auto-arrive: ตรวจระยะห่างคนขับจากพิกัด stop ถ้าใกล้พอ → เรียก auto-arrive
   const tryAutoArrive = (stop, onArrived) => {
+    if (!route?.route_id) {
+      toast.error('ยังไม่มีข้อมูลเส้นทาง')
+      return
+    }
     if (!navigator.geolocation) {
       toast.error('อุปกรณ์ไม่รองรับการระบุพิกัด — กรุณากดยืนยันมือ')
       return
