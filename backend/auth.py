@@ -93,6 +93,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 def verify_jwt_token(token: str) -> dict:
     """ตรวจสอบ JWT token และคืนค่า payload"""
+    # ตรวจ revoked (logout) ก่อน — best-effort in-memory store
+    if token in _REVOKED_TOKENS:
+        raise HTTPException(status_code=401, detail="Token has been revoked")
     try:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         username: str = payload.get("sub")
