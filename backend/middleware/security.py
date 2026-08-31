@@ -3,14 +3,15 @@ Security Middleware
 Rate limiting, audit logging, security headers, CSRF protection
 """
 
+import logging
 import os
 import re
 import time
-import logging
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +22,13 @@ TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true
 # ─── CSRF Protection ──────────────────────────────────────────────
 
 # Allowed origins for CSRF validation
-ALLOWED_ORIGINS = set(
+ALLOWED_ORIGINS = {
     origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    ).split(",")
     if origin.strip()
-)
+}
 
 # Methods that require CSRF validation
 CSRF_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
@@ -51,7 +54,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Skip CSRF for login endpoints (unauthenticated) — รองรับทั้ง path ปัจจุบันและเก่า
-        if request.url.path == "/api/v1/auth/login" or request.url.path == "/api/auth/login":
+        if (
+            request.url.path == "/api/v1/auth/login"
+            or request.url.path == "/api/auth/login"
+        ):
             return await call_next(request)
 
         # Skip CSRF for LINE webhook (receives POST from LINE servers without Origin)
@@ -78,11 +84,13 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             if request.headers.get("Authorization"):
                 return await call_next(request)
             # Block browser requests without Origin
-            logger.warning(f"CSRF: No Origin/Referer header from {request.client.host if request.client else 'unknown'} {request.method} {request.url.path}")
+            logger.warning(
+                f"CSRF: No Origin/Referer header from {request.client.host if request.client else 'unknown'} {request.method} {request.url.path}"
+            )
             return Response(
                 content='{"detail": "Missing Origin header"}',
                 status_code=403,
-                media_type="application/json"
+                media_type="application/json",
             )
 
         # Validate origin against allowed list
@@ -94,11 +102,13 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 break
 
         if not origin_allowed:
-            logger.warning(f"CSRF: Invalid origin {check_host} for {request.method} {request.url.path}")
+            logger.warning(
+                f"CSRF: Invalid origin {check_host} for {request.method} {request.url.path}"
+            )
             return Response(
                 content='{"detail": "Invalid origin"}',
                 status_code=403,
-                media_type="application/json"
+                media_type="application/json",
             )
 
         return await call_next(request)
@@ -106,15 +116,16 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
 # ─── Rate Limiting ────────────────────────────────────────────────
 
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Rate limiting middleware using in-memory store"""
-    
+
     def __init__(self, app, requests_per_minute: int = 60):
         super().__init__(app)
         self.requests_per_minute = requests_per_minute
         self.requests = defaultdict(list)  # IP -> list of timestamps
         self._cleanup_counter = 0
-    
+
     async def dispatch(self, request: Request, call_next):
         # Get real client IP behind reverse proxy
         client_ip = request.client.host if request.client else "unknown"
@@ -134,40 +145,39 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     client_ip = forwarded_for.split(",")[-1].strip()
                 elif real_ip:
                     client_ip = real_ip.strip()
-        
-        now = datetime.now(timezone.utc)
-        
+
+        now = datetime.now(UTC)
+
         # ลบ requests เก่า
         self.requests[client_ip] = [
-            ts for ts in self.requests[client_ip]
-            if now - ts < timedelta(minutes=1)
+            ts for ts in self.requests[client_ip] if now - ts < timedelta(minutes=1)
         ]
-        
+
         # ตรวจสอบ rate limit
         if len(self.requests[client_ip]) >= self.requests_per_minute:
             logger.warning(f"Rate limit exceeded for {client_ip}")
             return Response(
                 content='{"detail": "Rate limit exceeded. Please try again later."}',
                 status_code=429,
-                media_type="application/json"
+                media_type="application/json",
             )
-        
+
         # บันทึก request
         self.requests[client_ip].append(now)
-        
+
         # Periodic cleanup of stale IP entries (every 100 requests)
         self._cleanup_counter += 1
         if self._cleanup_counter >= 100:
             self._cleanup_counter = 0
             stale_ips = [
-                ip for ip, timestamps in self.requests.items()
-                if not timestamps or all(
-                    now - ts >= timedelta(minutes=1) for ts in timestamps
-                )
+                ip
+                for ip, timestamps in self.requests.items()
+                if not timestamps
+                or all(now - ts >= timedelta(minutes=1) for ts in timestamps)
             ]
             for ip in stale_ips:
                 del self.requests[ip]
-        
+
         response = await call_next(request)
         return response
 
@@ -191,8 +201,8 @@ def _mask_sensitive_data(data: str) -> str:
     masked = data
     for key, replacement in _SENSITIVE_PATTERNS:
         # Mask values in key=value patterns
-        pattern = rf'({key}[=:]\s*)([^\s&,}}]+)'
-        masked = re.sub(pattern, rf'\g<1>{replacement}', masked, flags=re.IGNORECASE)
+        pattern = rf"({key}[=:]\s*)([^\s&,}}]+)"
+        masked = re.sub(pattern, rf"\g<1>{replacement}", masked, flags=re.IGNORECASE)
     return masked
 
 
@@ -205,7 +215,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host if request.client else "unknown"
         method = request.method
         path = request.url.path
-        user_agent = request.headers.get("user-agent", "-")
+        request.headers.get("user-agent", "-")
 
         # Best-effort: extract username from Bearer token (verified signature)
         username = "-"
@@ -213,6 +223,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         if auth_hdr.startswith("Bearer "):
             try:
                 from auth import verify_jwt_token
+
                 payload = verify_jwt_token(auth_hdr[7:])
                 username = payload.get("sub") or "-"
             except Exception:
@@ -224,7 +235,9 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
         # Build audit log entry
         status = response.status_code
-        log_entry = f"{client_ip} user={username} {method} {path} {status} {duration:.3f}s"
+        log_entry = (
+            f"{client_ip} user={username} {method} {path} {status} {duration:.3f}s"
+        )
 
         # Log security events with appropriate severity
         if status == 401:
@@ -255,19 +268,22 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
 # ─── Security Headers ─────────────────────────────────────────────
 
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to responses"""
-    
+
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        
+
         # เพิ่ม security headers
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "0"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-        
+        response.headers["Permissions-Policy"] = (
+            "geolocation=(), microphone=(), camera=()"
+        )
+
         # Content Security Policy — no unsafe-inline/unsafe-eval
         csp = (
             "default-src 'self'; "
@@ -278,5 +294,5 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "connect-src 'self' https://maps.googleapis.com https://api.line.me"
         )
         response.headers["Content-Security-Policy"] = csp
-        
+
         return response

@@ -2,9 +2,10 @@
 
 import logging
 import time
+
 from sqlalchemy.exc import OperationalError
 
-from database.connection import SessionLocal, _record_db_metric
+from database.connection import SessionLocal
 from database.models import Vehicle
 
 logger = logging.getLogger(__name__)
@@ -31,19 +32,35 @@ def save_vehicles_to_db(vehicles_list: list[dict]):
                 except (ValueError, TypeError):
                     v_id = idx + 1
 
-                name = str(v.get("name") if v.get("name") is not None else f"รถคันที่ {v_id}")
+                name = str(
+                    v.get("name") if v.get("name") is not None else f"รถคันที่ {v_id}"
+                )
                 plate = str(v.get("plate") or "")
                 driver = str(v.get("driver") or "")
                 line_user_id = str(v.get("line_user_id") or "")
 
                 try:
                     cap_val = v.get("capacity")
-                    capacity = float(cap_val) if (cap_val is not None and cap_val != "") else 3750.0
+                    capacity = (
+                        float(cap_val)
+                        if (cap_val is not None and cap_val != "")
+                        else 3750.0
+                    )
                 except (ValueError, TypeError):
                     capacity = 3750.0
 
                 raw_act = v.get("active")
-                active = 1 if (raw_act is True or raw_act == 1 or raw_act == "1" or raw_act is None or str(raw_act).lower() == "true") else 0
+                active = (
+                    1
+                    if (
+                        raw_act is True
+                        or raw_act == 1
+                        or raw_act == "1"
+                        or raw_act is None
+                        or str(raw_act).lower() == "true"
+                    )
+                    else 0
+                )
 
                 try:
                     max_volume_cbm = float(v.get("max_volume_cbm") or 0)
@@ -68,7 +85,7 @@ def save_vehicles_to_db(vehicles_list: list[dict]):
                     max_boxes=max_boxes,
                     max_stops=max_stops,
                     line_user_id=line_user_id,
-                    active=bool(active)
+                    active=bool(active),
                 )
                 db.add(vehicle)
 
@@ -78,15 +95,17 @@ def save_vehicles_to_db(vehicles_list: list[dict]):
         except OperationalError as err:
             db.rollback()
             if "locked" in str(err).lower() and attempt < max_retries - 1:
-                logger.warning(f"Database locked, retrying save_vehicles_to_db (attempt {attempt + 1}/{max_retries})...")
+                logger.warning(
+                    f"Database locked, retrying save_vehicles_to_db (attempt {attempt + 1}/{max_retries})..."
+                )
                 time.sleep(0.2)
                 continue
-            logger.error(f"Error in save_vehicles_to_db: {err}", exc_info=True)
-            raise err
-        except Exception as err:
+            logger.exception("Error in save_vehicles_to_db")
+            raise
+        except Exception:
             db.rollback()
-            logger.error(f"Error in save_vehicles_to_db: {err}", exc_info=True)
-            raise err
+            logger.exception("Error in save_vehicles_to_db")
+            raise
         finally:
             db.close()
 
@@ -112,7 +131,7 @@ def get_vehicles_from_db() -> list[dict]:
                 "max_boxes": v.max_boxes or 0,
                 "max_stops": v.max_stops or 0,
                 "line_user_id": v.line_user_id or "",
-                "active": bool(v.active)
+                "active": bool(v.active),
             }
             result.append(r)
         return result

@@ -6,8 +6,7 @@ Handles alerts for failed deliveries, idle vehicles, route deviations.
 import json
 import logging
 import threading
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +39,7 @@ def _get_redis():
     """Try to get Redis client from cache module."""
     try:
         from services.cache import get_redis_client
+
         return get_redis_client()
     except Exception:
         return None
@@ -90,7 +90,7 @@ def _get_next_id() -> int:
         try:
             return int(client.incr(_NOTIF_COUNT_KEY))
         except Exception:
-            pass
+            logger.warning("Failed to increment notification counter")
     with _notif_lock:
         _notification_counter += 1
         return _notification_counter
@@ -100,14 +100,16 @@ def add_notification(
     notif_type: str,
     title: str,
     message: str,
-    route_id: int = None,
-    vehicle_id: int = None,
-    stop_id: int = None,
+    route_id: int | None = None,
+    vehicle_id: int | None = None,
+    stop_id: int | None = None,
     target_role: str = "dispatcher",
 ) -> dict:
     """เพิ่ม notification ใหม่"""
     notif_id = _get_next_id()
-    type_info = NOTIFICATION_TYPES.get(notif_type, {"priority": "medium", "icon": "🔔", "color": "#6b7280"})
+    type_info = NOTIFICATION_TYPES.get(
+        notif_type, {"priority": "medium", "icon": "🔔", "color": "#6b7280"}
+    )
 
     notification = {
         "id": notif_id,
@@ -122,7 +124,7 @@ def add_notification(
         "stop_id": stop_id,
         "target_role": target_role,
         "read": False,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
     }
 
     if _is_redis_available():
@@ -142,9 +144,7 @@ def add_notification(
 
 
 def get_notifications(
-    target_role: str = None,
-    unread_only: bool = False,
-    limit: int = 50
+    target_role: str | None = None, unread_only: bool = False, limit: int = 50
 ) -> list[dict]:
     """ดึง notifications"""
     if _is_redis_available():
@@ -162,7 +162,9 @@ def get_notifications(
     return result[:limit]
 
 
-def mark_notification_read(notification_id: int, target_role: str = None) -> bool:
+def mark_notification_read(
+    notification_id: int, target_role: str | None = None
+) -> bool:
     """ทำเครื่องหมาย notification เป็นอ่านแล้ว (ตรวจสอบสิทธิ์ตาม role)"""
     if _is_redis_available():
         notifs = _load_notifications_from_redis()
@@ -184,7 +186,7 @@ def mark_notification_read(notification_id: int, target_role: str = None) -> boo
         return False
 
 
-def mark_all_read(target_role: str = None) -> int:
+def mark_all_read(target_role: str | None = None) -> int:
     """ทำเครื่องหมายทั้งหมดเป็นอ่านแล้ว"""
     if _is_redis_available():
         notifs = _load_notifications_from_redis()
@@ -208,7 +210,7 @@ def mark_all_read(target_role: str = None) -> int:
         return count
 
 
-def get_unread_count(target_role: str = None) -> int:
+def get_unread_count(target_role: str | None = None) -> int:
     """นับจำนวน unread notifications"""
     if _is_redis_available():
         notifs = _load_notifications_from_redis()
@@ -226,7 +228,14 @@ def get_unread_count(target_role: str = None) -> int:
 
 # ─── Auto-Generate Notifications ─────────────────────────────────
 
-def notify_delivery_failed(customer: str, driver: str, reason: str, route_id: int = None, stop_id: int = None):
+
+def notify_delivery_failed(
+    customer: str,
+    driver: str,
+    reason: str,
+    route_id: int | None = None,
+    stop_id: int | None = None,
+):
     """แจ้งเตือนเมื่อส่งไม่สำเร็จ"""
     add_notification(
         "DELIVERY_FAILED",
@@ -238,7 +247,9 @@ def notify_delivery_failed(customer: str, driver: str, reason: str, route_id: in
     )
 
 
-def notify_transfer_suggested(source_driver: str, target_driver: str, customer: str, score: float):
+def notify_transfer_suggested(
+    source_driver: str, target_driver: str, customer: str, score: float
+):
     """แจ้งเตือนเมื่อมีคำแนะนำย้าย stop"""
     add_notification(
         "TRANSFER_SUGGESTED",
@@ -248,7 +259,9 @@ def notify_transfer_suggested(source_driver: str, target_driver: str, customer: 
     )
 
 
-def notify_transfer_executed(source_driver: str, target_driver: str, customer: str, approved_by: str):
+def notify_transfer_executed(
+    source_driver: str, target_driver: str, customer: str, approved_by: str
+):
     """แจ้งเตือนเมื่อย้าย stop สำเร็จ"""
     add_notification(
         "TRANSFER_EXECUTED",

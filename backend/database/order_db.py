@@ -3,11 +3,12 @@
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from sqlalchemy import text
 
 from database.connection import SessionLocal, _business_today, _record_db_metric
-from database.models import Order, OrderItem, RoutePlan, RouteDetail
+from database.models import Order, OrderItem, RouteDetail, RoutePlan
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def save_orders(orders: list[dict]) -> list[int]:
                 verified_at=order.get("verified_at"),
                 zone=order.get("zone"),
                 products_json=products_json,
-                created_at=datetime.now(timezone.utc)
+                created_at=datetime.now(UTC),
             )
             db.add(db_order)
             db.flush()
@@ -101,7 +102,7 @@ def save_orders(orders: list[dict]) -> list[int]:
                         unit=p.get("unit", "ชิ้น"),
                         price=p.get("price", 0),
                         total=p.get("total", 0),
-                        item_weight=p.get("item_weight", 0)
+                        item_weight=p.get("item_weight", 0),
                     )
                     db.add(db_item)
 
@@ -133,15 +134,21 @@ def get_today_orders() -> list[dict]:
     db = SessionLocal()
     try:
         today, tz = _business_today()
-        orders = db.query(Order).filter(
-            text("DATE(created_at AT TIME ZONE :tz) = :today")
-        ).params(today=today, tz=tz).order_by(Order.id.desc()).all()
+        orders = (
+            db.query(Order)
+            .filter(text("DATE(created_at AT TIME ZONE :tz) = :today"))
+            .params(today=today, tz=tz)
+            .order_by(Order.id.desc())
+            .all()
+        )
         return [_order_to_dict(order) for order in orders]
     finally:
         db.close()
 
 
-def update_order_location(order_id: int, lat: float, lng: float, verified_by: str = "user") -> bool:
+def update_order_location(
+    order_id: int, lat: float, lng: float, verified_by: str = "user"
+) -> bool:
     """อัปเดตและยืนยันพิกัดตำแหน่งจริงของออเดอร์ พร้อมเซฟเข้าความจำความแม่นยำถาวร"""
     from database.location_db import save_customer_location
 
@@ -158,17 +165,31 @@ def update_order_location(order_id: int, lat: float, lng: float, verified_by: st
         order.confidence_score = 100.0
         order.is_verified = 1
         order.verified_by = verified_by
-        order.verified_at = datetime.now(timezone.utc)
+        order.verified_at = datetime.now(UTC)
 
-        save_customer_location(order.customer, order.address, lat, lng, f"Verified Location ({lat}, {lng})", 100.0, db=db)
+        save_customer_location(
+            order.customer,
+            order.address,
+            lat,
+            lng,
+            f"Verified Location ({lat}, {lng})",
+            100.0,
+            db=db,
+        )
 
         try:
             today, tz = _business_today()
-            plan = db.query(RoutePlan).filter(
-                text("DATE(plan_date AT TIME ZONE :tz) = :today")
-            ).params(today=today, tz=tz).order_by(RoutePlan.id.desc()).first()
+            plan = (
+                db.query(RoutePlan)
+                .filter(text("DATE(plan_date AT TIME ZONE :tz) = :today"))
+                .params(today=today, tz=tz)
+                .order_by(RoutePlan.id.desc())
+                .first()
+            )
             if plan:
-                details = db.query(RouteDetail).filter(RouteDetail.plan_id == plan.id).all()
+                details = (
+                    db.query(RouteDetail).filter(RouteDetail.plan_id == plan.id).all()
+                )
                 for d in details:
                     stops = json.loads(d.stops_json) if d.stops_json else []
                     changed = False
@@ -186,7 +207,9 @@ def update_order_location(order_id: int, lat: float, lng: float, verified_by: st
             logger.warning(f"Could not sync stops_json for order {order_id}: {e}")
 
         db.commit()
-        logger.info(f"Updated location for Order #{order_id} => ({lat}, {lng}) by {verified_by}")
+        logger.info(
+            f"Updated location for Order #{order_id} => ({lat}, {lng}) by {verified_by}"
+        )
         return True
     except Exception as e:
         db.rollback()

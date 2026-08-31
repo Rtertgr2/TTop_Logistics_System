@@ -5,15 +5,15 @@ NOTE: reconstructed (original source was unreadable / corrupted on disk).
 purge_expired_customer_data.
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 from database.db import SessionLocal
 from database.models import (
+    CustomerLocation,
+    ItemDelivery,
     Order,
     OrderItem,
-    CustomerLocation,
     StopStatusHistory,
-    ItemDelivery,
 )
 
 
@@ -29,7 +29,7 @@ def export_user_personal_data(user_id: int) -> dict | None:
             return None
         return {
             "user": row.to_dict(),
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": datetime.now(UTC).isoformat(),
             "note": "Export includes profile + consent records for this account.",
         }
     finally:
@@ -62,17 +62,24 @@ def purge_expired_customer_data(retention_days: int) -> dict:
     """Delete customer orders/locations older than retention_days (PDPA retention)."""
     db = SessionLocal()
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-        old_orders = (
-            db.query(Order).filter(Order.created_at < cutoff).all()
-        )
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+        old_orders = db.query(Order).filter(Order.created_at < cutoff).all()
         deleted_orders = len(old_orders)
         for o in old_orders:
             db.query(OrderItem).filter(OrderItem.order_id == o.id).delete()
-            db.query(StopStatusHistory).filter(StopStatusHistory.order_id == o.id).delete()
-            db.query(ItemDelivery).filter(ItemDelivery.stop_id.in_(
-                [s.id for s in db.query(StopStatusHistory).filter(StopStatusHistory.order_id == o.id)]
-            )).delete(synchronize_session=False)
+            db.query(StopStatusHistory).filter(
+                StopStatusHistory.order_id == o.id
+            ).delete()
+            db.query(ItemDelivery).filter(
+                ItemDelivery.stop_id.in_(
+                    [
+                        s.id
+                        for s in db.query(StopStatusHistory).filter(
+                            StopStatusHistory.order_id == o.id
+                        )
+                    ]
+                )
+            ).delete(synchronize_session=False)
         db.query(Order).filter(Order.created_at < cutoff).delete()
         deleted_locations = (
             db.query(CustomerLocation)

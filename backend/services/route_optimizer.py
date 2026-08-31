@@ -1,12 +1,22 @@
-import math
 import logging
+import math
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
-from datetime import datetime, timedelta
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
+from config import (
+    AVG_SPEED_KMH,
+    DEPOT_ADDRESS,
+    DEPOT_LAT,
+    DEPOT_LNG,
+    MAX_ROUTE_DISTANCE_KM,
+    MAX_STOPS_BEFORE_CLUSTER,
+    PRIORITY_STOP_COST_WEIGHT,
+    PRIORITY_TIME_COST_WEIGHT,
+    SOLVE_TIMEOUT_SECONDS,
+)
 from database.db import get_vehicles_from_db
-from config import DEPOT_LAT, DEPOT_LNG, DEPOT_ADDRESS, SOLVE_TIMEOUT_SECONDS, MAX_ROUTE_DISTANCE_KM, MAX_STOPS_BEFORE_CLUSTER, AVG_SPEED_KMH, PRIORITY_TIME_COST_WEIGHT, PRIORITY_STOP_COST_WEIGHT
 from services.distance_matrix_real import get_distance_matrix_real
 from services.geo_utils import haversine_km
 
@@ -15,23 +25,23 @@ logger = logging.getLogger(__name__)
 
 def _parse_time_to_minutes(time_str: str) -> int | None:
     """แปลงเวลา HH:MM เป็นนาที (ตั้งแต่ 00:00)
-    
+
     Return: นาที (0-1440) หรือ None ถ้าไม่ถูกต้อง
     """
     if not time_str:
         return None
-    
+
     try:
         parts = time_str.strip().split(":")
         if len(parts) != 2:
             return None
-        
+
         hours = int(parts[0])
         minutes = int(parts[1])
-        
+
         if not (0 <= hours <= 23 and 0 <= minutes <= 59):
             return None
-        
+
         return hours * 60 + minutes
     except (ValueError, TypeError):
         return None
@@ -39,33 +49,35 @@ def _parse_time_to_minutes(time_str: str) -> int | None:
 
 def _get_order_time_windows(orders: list[dict]) -> list[tuple[int, int]]:
     """ดึง time window จาก orders ทุกตัว
-    
+
     Return: list of (start_minutes, end_minutes) สำหรับแต่ละ order
     ถ้าไม่มี time window ให้ใช้ default (0, 1440) = ทั้งวัน
     """
     time_windows = []
-    
+
     for order in orders:
         start_str = order.get("time_window_start")
         end_str = order.get("time_window_end")
-        
+
         start_minutes = _parse_time_to_minutes(start_str)
         end_minutes = _parse_time_to_minutes(end_str)
-        
+
         # ถ้าไม่มี time window ให้ใช้ default (ทั้งวัน)
         if start_minutes is None:
             start_minutes = 0  # 00:00
         if end_minutes is None:
             end_minutes = 1440  # 24:00
-        
+
         # ตรวจสอบความถูกต้อง
         if start_minutes >= end_minutes:
-            logger.warning(f"Invalid time window for order {order.get('id')}: {start_str}-{end_str}")
+            logger.warning(
+                f"Invalid time window for order {order.get('id')}: {start_str}-{end_str}"
+            )
             start_minutes = 0
             end_minutes = 1440
-        
+
         time_windows.append((start_minutes, end_minutes))
-    
+
     return time_windows
 
 
@@ -81,7 +93,7 @@ def load_vehicles() -> list[dict]:
         return []
 
 
-def generate_google_maps_link(stops: list[dict], depot: dict = None) -> str:
+def generate_google_maps_link(stops: list[dict], depot: dict | None = None) -> str:
     """สร้าง Google Maps Directions Link"""
     points = []
     if depot:
@@ -108,7 +120,12 @@ def _distance_matrix_to_int_meters(matrix: list[list[float]]) -> list[list[int]]
     """แปลง distance matrix (km float) เป็น int (เมตร)"""
     max_int_meters = 10**9  # 1,000,000 km cap — ป้องกัน OverflowError จาก inf/NaN
     return [
-        [max_int_meters if cell == float("inf") or cell != cell else int(cell * 1000) for cell in row]
+        [
+            max_int_meters
+            if cell == float("inf") or math.isnan(cell)
+            else int(cell * 1000)
+            for cell in row
+        ]
         for row in matrix
     ]
 
@@ -137,7 +154,10 @@ def _make_stop_fields(order: dict) -> dict:
 
 # ─── 1.4.5 Clustering ──────────────────────────────────────────────
 
-def _kmeans_cluster(points: list[dict], k: int, depot_lat: float, depot_lng: float) -> list[list[int]]:
+
+def _kmeans_cluster(
+    points: list[dict], k: int, depot_lat: float, depot_lng: float
+) -> list[list[int]]:
     """K-means clustering — คืน list of clusters (แต่ละ cluster = list of indices)"""
     n = len(points)
     if k >= n:
@@ -191,7 +211,9 @@ def _kmeans_cluster(points: list[dict], k: int, depot_lat: float, depot_lng: flo
     return [cl for cl in clusters if cl]
 
 
-def _cluster_orders(orders: list[dict], depot_lat: float, depot_lng: float) -> list[list[dict]]:
+def _cluster_orders(
+    orders: list[dict], depot_lat: float, depot_lng: float
+) -> list[list[dict]]:
     """แบ่ง orders เป็น clusters ตามระยะทาง (ใช้เมื่อ > MAX_STOPS_BEFORE_CLUSTER)"""
     n = len(orders)
     if n <= MAX_STOPS_BEFORE_CLUSTER:
@@ -221,11 +243,14 @@ def _cluster_orders(orders: list[dict], depot_lat: float, depot_lng: float) -> l
         cluster_orders = [orders[valid_indices[i]] for i in cl]
         result.append(cluster_orders)
 
-    logger.info(f"Clustered {n} orders into {len(result)} zones (max {MAX_STOPS_BEFORE_CLUSTER} stops/zone)")
+    logger.info(
+        f"Clustered {n} orders into {len(result)} zones (max {MAX_STOPS_BEFORE_CLUSTER} stops/zone)"
+    )
     return result
 
 
 # ─── 1.4.6 Validate Constraints ─────────────────────────────────────
+
 
 def _validate_inputs(orders: list[dict], vehicles: list[dict]) -> list[str]:
     """ตรวจสอบ inputs ก่อนคำนวณ — คืน list of warnings"""
@@ -243,30 +268,43 @@ def _validate_inputs(orders: list[dict], vehicles: list[dict]) -> list[str]:
     total_capacity = sum(float(v.get("capacity", 3750)) for v in vehicles)
 
     if total_capacity > 0 and total_weight / total_capacity > 1.0:
-        warnings.append(f"น้ำหนักรวม ({total_weight:.0f} kg) เกินความจุรถรวม ({total_capacity:.0f} kg)")
+        warnings.append(
+            f"น้ำหนักรวม ({total_weight:.0f} kg) เกินความจุรถรวม ({total_capacity:.0f} kg)"
+        )
 
     for i, o in enumerate(orders):
         w = float(o.get("weight") or 0)
         if w < 0:
-            warnings.append(f"Order #{i+1} มีน้ำหนักติดลบ ({w})")
+            warnings.append(f"Order #{i + 1} มีน้ำหนักติดลบ ({w})")
         elif w == 0:
-            warnings.append(f"Order #{i+1} ไม่มีน้ำหนัก (ใช้ 0 kg)")
+            warnings.append(f"Order #{i + 1} ไม่มีน้ำหนัก (ใช้ 0 kg)")
 
-    orders_without_coords = [i for i, o in enumerate(orders) if not o.get("lat") or not o.get("lng")]
+    orders_without_coords = [
+        i for i, o in enumerate(orders) if not o.get("lat") or not o.get("lng")
+    ]
     if orders_without_coords:
-        warnings.append(f"{len(orders_without_coords)} orders ไม่มีพิกัด (จะใช้ Haversine จาก depot)")
+        warnings.append(
+            f"{len(orders_without_coords)} orders ไม่มีพิกัด (จะใช้ Haversine จาก depot)"
+        )
 
     return warnings
 
 
 # ─── 1.4.7 ETA Calculation ──────────────────────────────────────────
 
-def _calculate_eta(stops: list[dict], distance_matrix_int: list[list[int]], depot_lat: float, depot_lng: float, start_hour: int = 8) -> list[dict]:
+
+def _calculate_eta(
+    stops: list[dict],
+    distance_matrix_int: list[list[int]],
+    depot_lat: float,
+    depot_lng: float,
+    start_hour: int = 8,
+) -> list[dict]:
     """คำนวณ ETA ทุกจุด — สมมติ depot เป็นจุดเริ่มต้น, เริ่มจาก start_hour (default 08:00)"""
     if not stops:
         return stops
 
-    now = datetime.now()
+    now = datetime.now(UTC)
     start_time = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
     # ถ้าเลย start_hour แล้ว ให้ใช้วันพรุ่งนี้
     if now.hour >= start_hour:
@@ -300,7 +338,10 @@ def _calculate_eta(stops: list[dict], distance_matrix_int: list[list[int]], depo
 
 # ─── Demand Mode Selection ───────────────────────────────────────────
 
-def _choose_demand_mode(orders: list[dict], vehicles: list[dict]) -> tuple[str, list[int], list[int]]:
+
+def _choose_demand_mode(
+    orders: list[dict], vehicles: list[dict]
+) -> tuple[str, list[int], list[int]]:
     """เลือก demand mode: 'weight' หรือ 'stop_count'
 
     ใช้ weight-based เป็นหลัก — solver จะกระจายตาม distance โดยอัตโนมัติ
@@ -327,17 +368,18 @@ def _choose_demand_mode(orders: list[dict], vehicles: list[dict]) -> tuple[str, 
 
 # ─── OR-Tools Solver ─────────────────────────────────────────────────
 
+
 def _solve_vrp(
     distance_matrix_int: list[list[int]],
     num_vehicles: int,
     vehicle_capacities: list[int],
     order_demands: list[int],
     depot_index: int = 0,
-    time_windows: list[tuple[int, int]] = None,
+    time_windows: list[tuple[int, int]] | None = None,
     service_time_minutes: int = 5,
 ) -> dict | None:
     """แก้ CVRPTW ด้วย OR-Tools
-    
+
     Args:
         distance_matrix_int: distance matrix (เมตร)
         num_vehicles: จำนวนรถ
@@ -406,38 +448,42 @@ def _solve_vrp(
             from_node = manager.IndexToNode(from_index)
             to_node = manager.IndexToNode(to_index)
             # เวลาเดินทาง (นาที) = ระยะทาง (เมตร) / ความเร็ว (เมตร/นาที)
-            travel_time = distance_matrix_int[from_node][to_node] / (AVG_SPEED_KMH * 1000 / 60)
+            travel_time = distance_matrix_int[from_node][to_node] / (
+                AVG_SPEED_KMH * 1000 / 60
+            )
             # เวลาหยุด (เฉพาะจุดที่ไม่ใช่ depot)
             service = service_time_minutes if from_node != depot_index else 0
             return int(travel_time + service)
 
         time_callback_index = routing.RegisterTransitCallback(time_callback)
-        
+
         # กำหนด time dimension
         max_time = 1440  # 24 ชั่วโมง = 1440 นาที
         routing.AddDimension(
             time_callback_index,
             max_time,  # allow waiting time
             max_time,  # maximum time per vehicle
-            False,     # don't force start cumulative to zero
+            False,  # don't force start cumulative to zero
             "Time",
         )
-        
+
         time_dimension = routing.GetDimensionOrDie("Time")
-        
+
         # ตั้ง time window สำหรับแต่ละจุด
         for location_idx, (start, end) in enumerate(time_windows):
             index = manager.NodeToIndex(location_idx)
             time_dimension.CumulVar(index).SetRange(start, end)
-        
+
         # ตั้ง time window สำหรับ depot (เริ่ม 08:00 - 18:00)
         for vehicle_idx in range(num_vehicles):
             start_index = routing.Start(vehicle_idx)
             end_index = routing.End(vehicle_idx)
             time_dimension.CumulVar(start_index).SetRange(0, 1440)
             time_dimension.CumulVar(end_index).SetRange(0, 1440)
-        
-        logger.info(f"Time Window dimension added: {len(time_windows)} locations with time windows")
+
+        logger.info(
+            f"Time Window dimension added: {len(time_windows)} locations with time windows"
+        )
     else:
         logger.info("No time windows specified — solving CVRP (without time windows)")
 
@@ -516,18 +562,22 @@ def _extract_routes(
 
             maps_link = generate_google_maps_link(stops, depot)
 
-            routes.append({
-                "vehicle_id": vehicle.get("id", vehicle_idx + 1),
-                "plate": vehicle.get("plate", ""),
-                "driver": vehicle.get("driver", ""),
-                "name": vehicle.get("name", f"รถคันที่ {vehicle.get('id', vehicle_idx + 1)}"),
-                "capacity": v_capacity,
-                "stops": stops,
-                "total_weight": total_weight,
-                "total_distance_km": round(total_distance_m / 1000, 2),
-                "google_maps_link": maps_link,
-                "depot": depot,
-            })
+            routes.append(
+                {
+                    "vehicle_id": vehicle.get("id", vehicle_idx + 1),
+                    "plate": vehicle.get("plate", ""),
+                    "driver": vehicle.get("driver", ""),
+                    "name": vehicle.get(
+                        "name", f"รถคันที่ {vehicle.get('id', vehicle_idx + 1)}"
+                    ),
+                    "capacity": v_capacity,
+                    "stops": stops,
+                    "total_weight": total_weight,
+                    "total_distance_km": round(total_distance_m / 1000, 2),
+                    "google_maps_link": maps_link,
+                    "depot": depot,
+                }
+            )
 
     return routes
 
@@ -598,10 +648,15 @@ def _fallback_sweep(
             for i in range(len(all_pts)):
                 for j in range(len(all_pts)):
                     if i != j:
-                        dummy_dm[i][j] = int(haversine_km(
-                            all_pts[i].get("lat", depot_lat), all_pts[i].get("lng", depot_lng),
-                            all_pts[j].get("lat", depot_lat), all_pts[j].get("lng", depot_lng),
-                        ) * 1000)
+                        dummy_dm[i][j] = int(
+                            haversine_km(
+                                all_pts[i].get("lat", depot_lat),
+                                all_pts[i].get("lng", depot_lng),
+                                all_pts[j].get("lat", depot_lat),
+                                all_pts[j].get("lng", depot_lng),
+                            )
+                            * 1000
+                        )
             formatted = _calculate_eta(formatted, dummy_dm, depot_lat, depot_lng)
 
             depot = {
@@ -620,23 +675,29 @@ def _fallback_sweep(
                 prev_idx = stop_idx
             total_dist_km += dummy_dm[prev_idx][0] / 1000  # return to depot
 
-            routes.append({
-                "vehicle_id": vehicle.get("id", v_idx + 1),
-                "plate": vehicle.get("plate", ""),
-                "driver": vehicle.get("driver", ""),
-                "name": vehicle.get("name", f"รถคันที่ {vehicle.get('id', v_idx + 1)}"),
-                "capacity": v_capacity,
-                "stops": formatted,
-                "total_weight": round(current_weight, 2),
-                "total_distance_km": round(total_dist_km, 2),
-                "google_maps_link": maps_link,
-                "depot": depot,
-            })
+            routes.append(
+                {
+                    "vehicle_id": vehicle.get("id", v_idx + 1),
+                    "plate": vehicle.get("plate", ""),
+                    "driver": vehicle.get("driver", ""),
+                    "name": vehicle.get(
+                        "name", f"รถคันที่ {vehicle.get('id', v_idx + 1)}"
+                    ),
+                    "capacity": v_capacity,
+                    "stops": formatted,
+                    "total_weight": round(current_weight, 2),
+                    "total_distance_km": round(total_dist_km, 2),
+                    "google_maps_link": maps_link,
+                    "depot": depot,
+                }
+            )
 
     return {"routes": routes, "warnings": warnings}
 
 
-def _tsp_nearest_neighbor(stops: list[dict], depot_lat: float, depot_lng: float) -> list[dict]:
+def _tsp_nearest_neighbor(
+    stops: list[dict], depot_lat: float, depot_lng: float
+) -> list[dict]:
     """จัดลำดับจุดส่งตาม Nearest Neighbor TSP"""
     if len(stops) <= 1:
         return stops
@@ -685,17 +746,19 @@ def _rebalance_routes(
     active_route_ids = {r["vehicle_id"] for r in routes}
     for v in vehicles:
         if v.get("active", True) and v.get("id") not in active_route_ids:
-            routes.append({
-                "vehicle_id": v.get("id"),
-                "plate": v.get("plate", ""),
-                "driver": v.get("driver", ""),
-                "name": v.get("name", f"รถคันที่ {v.get('id')}"),
-                "capacity": float(v.get("capacity", 3750)),
-                "stops": [],
-                "total_weight": 0,
-                "total_distance_km": 0,
-                "google_maps_link": "",
-            })
+            routes.append(
+                {
+                    "vehicle_id": v.get("id"),
+                    "plate": v.get("plate", ""),
+                    "driver": v.get("driver", ""),
+                    "name": v.get("name", f"รถคันที่ {v.get('id')}"),
+                    "capacity": float(v.get("capacity", 3750)),
+                    "stops": [],
+                    "total_weight": 0,
+                    "total_distance_km": 0,
+                    "google_maps_link": "",
+                }
+            )
 
     total_stops = sum(len(r["stops"]) for r in routes)
     avg = total_stops / len(routes)
@@ -705,11 +768,15 @@ def _rebalance_routes(
     overloaded = [r for r in routes if len(r["stops"]) > avg * 1.2]
 
     if underloaded:
-        logger.info(f"Rebalancing: {len(underloaded)} underloaded (avg={avg:.1f}, min={min_acceptable:.1f})")
+        logger.info(
+            f"Rebalancing: {len(underloaded)} underloaded (avg={avg:.1f}, min={min_acceptable:.1f})"
+        )
 
         for under in underloaded:
             if not overloaded:
-                overloaded = [r for r in routes if r is not under and len(r["stops"]) > 1]
+                overloaded = [
+                    r for r in routes if r is not under and len(r["stops"]) > 1
+                ]
                 if not overloaded:
                     break
 
@@ -738,11 +805,21 @@ def _rebalance_routes(
             if best_stop and best_source:
                 best_source["stops"].remove(best_stop)
                 under["stops"].append(best_stop)
-                under["total_weight"] = round(sum(s.get("weight", 0) for s in under["stops"]), 2)
-                best_source["total_weight"] = round(sum(s.get("weight", 0) for s in best_source["stops"]), 2)
-                under["google_maps_link"] = generate_google_maps_link(under["stops"], None)
-                best_source["google_maps_link"] = generate_google_maps_link(best_source["stops"], None)
-                logger.info(f"Moved stop '{best_stop.get('customer', '')[:20]}' from vehicle {best_source['vehicle_id']} -> {under['vehicle_id']}")
+                under["total_weight"] = round(
+                    sum(s.get("weight", 0) for s in under["stops"]), 2
+                )
+                best_source["total_weight"] = round(
+                    sum(s.get("weight", 0) for s in best_source["stops"]), 2
+                )
+                under["google_maps_link"] = generate_google_maps_link(
+                    under["stops"], None
+                )
+                best_source["google_maps_link"] = generate_google_maps_link(
+                    best_source["stops"], None
+                )
+                logger.info(
+                    f"Moved stop '{best_stop.get('customer', '')[:20]}' from vehicle {best_source['vehicle_id']} -> {under['vehicle_id']}"
+                )
 
     routes = [r for r in routes if len(r["stops"]) > 0]
 
@@ -760,7 +837,9 @@ def _rebalance_routes(
             break
 
         # หาคันที่มีที่เหลือ
-        available = [r for r in routes if r["total_weight"] < r.get("capacity", 3750) * 0.98]
+        available = [
+            r for r in routes if r["total_weight"] < r.get("capacity", 3750) * 0.98
+        ]
         if not available:
             logger.warning(f"Weight rebalance iter {_iter}: no available trucks")
             break
@@ -802,10 +881,18 @@ def _rebalance_routes(
                 if best_target:
                     over["stops"].remove(stop_candidate)
                     best_target["stops"].append(stop_candidate)
-                    over["total_weight"] = round(sum(s.get("weight", 0) for s in over["stops"]), 2)
-                    best_target["total_weight"] = round(sum(s.get("weight", 0) for s in best_target["stops"]), 2)
-                    over["google_maps_link"] = generate_google_maps_link(over["stops"], None)
-                    best_target["google_maps_link"] = generate_google_maps_link(best_target["stops"], None)
+                    over["total_weight"] = round(
+                        sum(s.get("weight", 0) for s in over["stops"]), 2
+                    )
+                    best_target["total_weight"] = round(
+                        sum(s.get("weight", 0) for s in best_target["stops"]), 2
+                    )
+                    over["google_maps_link"] = generate_google_maps_link(
+                        over["stops"], None
+                    )
+                    best_target["google_maps_link"] = generate_google_maps_link(
+                        best_target["stops"], None
+                    )
                     moved = True
                     logger.info(
                         f"Weight rebalance: moved '{stop_candidate.get('customer', '')[:20]}' "
@@ -821,6 +908,7 @@ def _rebalance_routes(
 
 
 # ─── Multi-day Overflow Splitting ────────────────────────────────────
+
 
 def _split_orders_by_capacity(
     orders: list[dict], total_capacity: float
@@ -851,10 +939,11 @@ def _split_orders_by_capacity(
 
 # ─── Main Entry Point ────────────────────────────────────────────────
 
+
 def optimize_routes(
     orders: list[dict],
-    vehicles: list[dict] = None,
-    depot: dict = None,
+    vehicles: list[dict] | None = None,
+    depot: dict | None = None,
 ) -> dict:
     """แก้ CVRPTW ด้วย OR-Tools
 
@@ -908,8 +997,10 @@ def optimize_routes(
     total_capacity = sum(float(v.get("capacity", 3750)) for v in vehicles)
     deferred_orders = []
 
-    if total_weight > total_capacity and total_capacity > 0:
-        today_orders, deferred_orders = _split_orders_by_capacity(orders, total_capacity)
+    if total_weight > total_capacity > 0:
+        today_orders, deferred_orders = _split_orders_by_capacity(
+            orders, total_capacity
+        )
         overflow_weight = sum(float(o.get("weight") or 0) for o in deferred_orders)
         overflow_count = len(deferred_orders)
         logger.warning(
@@ -928,12 +1019,18 @@ def optimize_routes(
         all_routes = []
 
         for cluster_idx, cluster_orders in enumerate(clusters):
-            logger.info(f"Solving cluster {cluster_idx + 1}/{len(clusters)}: {len(cluster_orders)} orders")
-            cluster_result = _solve_cluster(cluster_orders, vehicles, depot_lat, depot_lng)
+            logger.info(
+                f"Solving cluster {cluster_idx + 1}/{len(clusters)}: {len(cluster_orders)} orders"
+            )
+            cluster_result = _solve_cluster(
+                cluster_orders, vehicles, depot_lat, depot_lng
+            )
             all_routes.extend(cluster_result["routes"])
             warnings.extend(cluster_result["warnings"])
 
-        logger.info(f"Clustered VRP เสร็จ: {len(all_routes)} routes จาก {len(clusters)} clusters")
+        logger.info(
+            f"Clustered VRP เสร็จ: {len(all_routes)} routes จาก {len(clusters)} clusters"
+        )
         deferred_weight = sum(float(o.get("weight") or 0) for o in deferred_orders)
         return {
             "routes": all_routes,
@@ -970,12 +1067,16 @@ def _solve_cluster(
     # Distance matrix - ใช้ Google Distance Matrix API (Sprint 2.3)
     depot = {"lat": depot_lat, "lng": depot_lng}
     matrix = get_distance_matrix_real(orders, depot)
-    
+
     # แปลงเป็น int (เมตร) สำหรับ OR-Tools
     dm_int = _distance_matrix_to_int_meters(matrix)
 
-    demand_mode, vehicle_capacities, order_demands = _choose_demand_mode(orders, vehicles)
-    logger.info(f"Demand mode: {demand_mode} | vehicles: {len(vehicles)} | orders: {len(orders)} | timeout: {SOLVE_TIMEOUT_SECONDS}s")
+    demand_mode, vehicle_capacities, order_demands = _choose_demand_mode(
+        orders, vehicles
+    )
+    logger.info(
+        f"Demand mode: {demand_mode} | vehicles: {len(vehicles)} | orders: {len(orders)} | timeout: {SOLVE_TIMEOUT_SECONDS}s"
+    )
 
     # ดึง time windows จาก orders (Sprint 2.2)
     time_windows = _get_order_time_windows(orders)
@@ -995,7 +1096,9 @@ def _solve_cluster(
         routes = _extract_routes(result, orders, vehicles, dm_int, depot_lat, depot_lng)
         total_stops = sum(len(r["stops"]) for r in routes)
         total_obj = result["objective_value"]
-        logger.info(f"OR-Tools สำเร็จ: {len(routes)} routes, {total_stops} stops, objective={total_obj}")
+        logger.info(
+            f"OR-Tools สำเร็จ: {len(routes)} routes, {total_stops} stops, objective={total_obj}"
+        )
 
         routes = _rebalance_routes(routes, orders, vehicles, depot_lat, depot_lng)
         return {"routes": routes, "warnings": warnings}

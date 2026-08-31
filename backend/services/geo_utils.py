@@ -1,4 +1,5 @@
 """Shared geographic helper functions."""
+
 import math
 
 _EARTH_RADIUS_KM = 6371.0

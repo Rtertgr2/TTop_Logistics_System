@@ -11,25 +11,36 @@ Migration script: เพิ่มตารางใหม่ 6 ตาราง�
 ใช้: python database/migrate_add_tables.py
 """
 
+import logging
 import os
 import sys
-import logging
 
 # เพิ่ม path ของโปรเจกต์
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
+from sqlalchemy import create_engine
 
-from database.models import Base, Driver, VehicleLoad, StopStatusHistory, ItemDelivery, RouteTransfer, VehicleLocation
+from database.models import (
+    Base,
+    Driver,
+    ItemDelivery,
+    RouteTransfer,
+    StopStatusHistory,
+    VehicleLoad,
+    VehicleLocation,
+)
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://logistics:logistics@db:5432/logistics")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql://logistics:logistics@db:5432/logistics"
+)
 
 
 def migrate():
@@ -39,14 +50,17 @@ def migrate():
 
     # สร้างตารางใหม่ทั้งหมด
     logger.info("Creating new tables...")
-    Base.metadata.create_all(bind=engine, tables=[
-        Driver.__table__,
-        VehicleLoad.__table__,
-        StopStatusHistory.__table__,
-        ItemDelivery.__table__,
-        RouteTransfer.__table__,
-        VehicleLocation.__table__,
-    ])
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[
+            Driver.__table__,
+            VehicleLoad.__table__,
+            StopStatusHistory.__table__,
+            ItemDelivery.__table__,
+            RouteTransfer.__table__,
+            VehicleLocation.__table__,
+        ],
+    )
 
     logger.info("✅ Migration completed successfully!")
     logger.info("New tables created:")

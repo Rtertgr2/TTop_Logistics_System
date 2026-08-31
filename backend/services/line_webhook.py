@@ -1,9 +1,11 @@
+import base64
 import hashlib
 import hmac
-import base64
-import logging
 import json
-from fastapi import APIRouter, Request, HTTPException
+import logging
+
+from fastapi import APIRouter, HTTPException, Request
+
 from config import LINE_CHANNEL_SECRET
 from database.db import get_db
 from database.models import Vehicle
@@ -22,11 +24,7 @@ def verify_line_signature(body: bytes, signature: str) -> bool:
         logger.warning("Missing X-Line-Signature header")
         return False
 
-    hash = hmac.new(
-        LINE_CHANNEL_SECRET.encode("utf-8"),
-        body,
-        hashlib.sha256
-    ).digest()
+    hash = hmac.new(LINE_CHANNEL_SECRET.encode("utf-8"), body, hashlib.sha256).digest()
     expected = base64.b64encode(hash).decode("utf-8")
     return hmac.compare_digest(expected, signature)
 
@@ -41,17 +39,20 @@ def _handle_follow_event(event: dict):
 
     db = next(get_db())
     try:
-        vehicles = db.query(Vehicle).filter(
-            Vehicle.line_user_id == "",
-            Vehicle.active == True
-        ).all()
+        vehicles = (
+            db.query(Vehicle)
+            .filter(Vehicle.line_user_id == "", Vehicle.active == True)
+            .all()
+        )
 
         if vehicles:
-            logger.info(f"Found {len(vehicles)} vehicles without LINE ID — awaiting manual assignment")
+            logger.info(
+                f"Found {len(vehicles)} vehicles without LINE ID — awaiting manual assignment"
+            )
         else:
             logger.info("All active vehicles already have LINE ID assigned")
-    except Exception as e:
-        logger.error(f"Error handling follow event: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error handling follow event")
     finally:
         db.close()
 
@@ -96,7 +97,9 @@ async def line_webhook(request: Request):
         raise HTTPException(status_code=403, detail="Missing signature")
 
     if not verify_line_signature(body, signature):
-        logger.warning("LINE signature mismatch — ตรวจสอบ LINE_CHANNEL_SECRET ให้ตรงกับ console")
+        logger.warning(
+            "LINE signature mismatch — ตรวจสอบ LINE_CHANNEL_SECRET ให้ตรงกับ console"
+        )
         raise HTTPException(status_code=403, detail="Invalid signature")
 
     try:
@@ -118,7 +121,7 @@ async def line_webhook(request: Request):
                 _handle_postback_event(event)
             else:
                 logger.debug(f"Unhandled event type: {event_type}")
-        except Exception as e:
-            logger.error(f"Error processing event {event_type}: {e}", exc_info=True)
+        except Exception:
+            logger.exception(f"Error processing event {event_type}")
 
     return {"status": "ok"}

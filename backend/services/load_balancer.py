@@ -5,20 +5,19 @@ Auto-detect vehicle overflow/underflow and suggest transfers.
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
 # ─── Thresholds ──────────────────────────────────────────────────
 
-OVERFLOW_THRESHOLD = 0.90      # >= 90% = "รถเต็ม"
-UNDERFLOW_THRESHOLD = 0.40     # <= 40% = "รถว่างเกิน"
-TARGET_MIN = 0.60              # เป้าหมาย transfer: >= 60%
-TARGET_MAX = 0.85              # เป้าหมาย transfer: <= 85%
-SOURCE_MIN_AFTER = 0.30        # ย้ายออกแล้ว source ต้อง >= 30%
-MAX_DETOUR_KM = 5.0            # สูงสุดระยะเบี่ยงเบน
-MAX_DETOUR_MINUTES = 15        # สูงสุดเวลาเบี่ยงเบน
+OVERFLOW_THRESHOLD = 0.90  # >= 90% = "รถเต็ม"
+UNDERFLOW_THRESHOLD = 0.40  # <= 40% = "รถว่างเกิน"
+TARGET_MIN = 0.60  # เป้าหมาย transfer: >= 60%
+TARGET_MAX = 0.85  # เป้าหมาย transfer: <= 85%
+SOURCE_MIN_AFTER = 0.30  # ย้ายออกแล้ว source ต้อง >= 30%
+MAX_DETOUR_KM = 5.0  # สูงสุดระยะเบี่ยงเบน
+MAX_DETOUR_MINUTES = 15  # สูงสุดเวลาเบี่ยงเบน
 
 
 # ─── Utility ─────────────────────────────────────────────────────
@@ -31,7 +30,9 @@ def _route_centroid(stops):
     valid = [(s["lat"], s["lng"]) for s in stops if s.get("lat") and s.get("lng")]
     if not valid:
         return None, None
-    return sum(la for la, _ in valid) / len(valid), sum(lo for _, lo in valid) / len(valid)
+    return sum(la for la, _ in valid) / len(valid), sum(lo for _, lo in valid) / len(
+        valid
+    )
 
 
 def _calculate_route_weight(stops):
@@ -41,7 +42,8 @@ def _calculate_route_weight(stops):
 
 # ─── Utilization Calculation ─────────────────────────────────────
 
-def calculate_utilization(route: dict, vehicle_capacity: float = None) -> dict:
+
+def calculate_utilization(route: dict, vehicle_capacity: float | None = None) -> dict:
     """คำนวณ utilization ของรถแต่ละคัน"""
     capacity = vehicle_capacity or route.get("capacity", 3750)
     stops = route.get("stops") or []
@@ -75,6 +77,7 @@ def calculate_utilization(route: dict, vehicle_capacity: float = None) -> dict:
 
 # ─── Auto-Detect ─────────────────────────────────────────────────
 
+
 def detect_imbalances(routes: list[dict]) -> dict:
     """ตรวจจับรถที่เต็มหรือว่างเกิน"""
     vehicles = []
@@ -100,17 +103,22 @@ def detect_imbalances(routes: list[dict]) -> dict:
 
 # ─── Transfer Scoring ────────────────────────────────────────────
 
-def _score_transfer(source_stops, candidate_stop, target_centroid, target_capacity, target_weight, avg_speed_kmh=30):
+
+def _score_transfer(
+    source_stops,
+    candidate_stop,
+    target_centroid,
+    target_capacity,
+    target_weight,
+    avg_speed_kmh=30,
+):
     """คำนวณ Transfer Score (ยิ่งต่ำ = ยิ่งคุ้มค่า)"""
     score = 0.0
 
     # 1. Detour distance (km) — ระยะทางเบี่ยงเบน
     stop_lat = candidate_stop.get("lat", 0)
     stop_lng = candidate_stop.get("lng", 0)
-    detour_km = haversine_km(
-        target_centroid[0], target_centroid[1],
-        stop_lat, stop_lng
-    )
+    detour_km = haversine_km(target_centroid[0], target_centroid[1], stop_lat, stop_lng)
     score += detour_km * 10  # 10 points per km
 
     # 2. Time penalty (minutes)
@@ -138,7 +146,9 @@ def _score_transfer(source_stops, candidate_stop, target_centroid, target_capaci
     return round(score, 1)
 
 
-def find_transfer_suggestions(routes: list[dict], avg_speed_kmh: int = 30) -> list[dict]:
+def find_transfer_suggestions(
+    routes: list[dict], avg_speed_kmh: int = 30
+) -> list[dict]:
     """หาคำแนะนำการย้าย stop ระหว่างรถ"""
     imbalances = detect_imbalances(routes)
     suggestions = []
@@ -164,7 +174,7 @@ def find_transfer_suggestions(routes: list[dict], avg_speed_kmh: int = 30) -> li
             key=lambda s: (
                 -s.get("weight", 0),  # heavier first
                 1 if s.get("time_window_end") else 0,  # no time window first
-            )
+            ),
         )
 
         for candidate_stop in transferable[:5]:  # Top 5 candidates
@@ -187,24 +197,38 @@ def find_transfer_suggestions(routes: list[dict], avg_speed_kmh: int = 30) -> li
                 target_capacity = underflow_info["capacity"]
 
                 score = _score_transfer(
-                    overflow_stops, candidate_stop,
-                    target_centroid, target_capacity, target_weight,
-                    avg_speed_kmh
+                    overflow_stops,
+                    candidate_stop,
+                    target_centroid,
+                    target_capacity,
+                    target_weight,
+                    avg_speed_kmh,
                 )
 
                 if score is not None:
-                    target_scores.append({
-                        "target_route_id": underflow_info["route_id"],
-                        "target_vehicle_id": underflow_info["vehicle_id"],
-                        "target_driver": underflow_info["driver"],
-                        "target_plate": underflow_info["plate"],
-                        "target_weight": round(target_weight, 1),
-                        "target_capacity": target_capacity,
-                        "target_weight_pct": underflow_info["weight_pct"],
-                        "new_target_weight": round(target_weight + candidate_stop.get("weight", 0), 1),
-                        "new_target_pct": round((target_weight + candidate_stop.get("weight", 0)) / target_capacity * 100, 1) if target_capacity > 0 else 0,
-                        "score": score,
-                    })
+                    target_scores.append(
+                        {
+                            "target_route_id": underflow_info["route_id"],
+                            "target_vehicle_id": underflow_info["vehicle_id"],
+                            "target_driver": underflow_info["driver"],
+                            "target_plate": underflow_info["plate"],
+                            "target_weight": round(target_weight, 1),
+                            "target_capacity": target_capacity,
+                            "target_weight_pct": underflow_info["weight_pct"],
+                            "new_target_weight": round(
+                                target_weight + candidate_stop.get("weight", 0), 1
+                            ),
+                            "new_target_pct": round(
+                                (target_weight + candidate_stop.get("weight", 0))
+                                / target_capacity
+                                * 100,
+                                1,
+                            )
+                            if target_capacity > 0
+                            else 0,
+                            "score": score,
+                        }
+                    )
 
             # Sort by score (lower = better)
             target_scores.sort(key=lambda x: x["score"])
@@ -213,33 +237,40 @@ def find_transfer_suggestions(routes: list[dict], avg_speed_kmh: int = 30) -> li
                 best = target_scores[0]
                 stop_weight = candidate_stop.get("weight", 0)
                 new_source_weight = overflow_weight - stop_weight
-                new_source_pct = round(new_source_weight / overflow_capacity * 100, 1) if overflow_capacity > 0 else 0
+                new_source_pct = (
+                    round(new_source_weight / overflow_capacity * 100, 1)
+                    if overflow_capacity > 0
+                    else 0
+                )
 
                 # Block if source goes below 30%
                 if new_source_pct < SOURCE_MIN_AFTER * 100:
                     continue
 
-                suggestions.append({
-                    "source_route_id": overflow_info["route_id"],
-                    "source_vehicle_id": overflow_info["vehicle_id"],
-                    "source_driver": overflow_info["driver"],
-                    "source_plate": overflow_info["plate"],
-                    "source_weight_before": overflow_info["current_weight"],
-                    "source_weight_after": round(new_source_weight, 1),
-                    "source_pct_before": overflow_info["weight_pct"],
-                    "source_pct_after": new_source_pct,
-                    "stop": {
-                        "id": candidate_stop.get("id") or candidate_stop.get("order_number"),
-                        "customer": candidate_stop.get("customer"),
-                        "address": candidate_stop.get("address"),
-                        "weight": stop_weight,
-                        "lat": candidate_stop.get("lat"),
-                        "lng": candidate_stop.get("lng"),
-                    },
-                    "target": best,
-                    "transfer_score": best["score"],
-                    "rank": len(suggestions) + 1,
-                })
+                suggestions.append(
+                    {
+                        "source_route_id": overflow_info["route_id"],
+                        "source_vehicle_id": overflow_info["vehicle_id"],
+                        "source_driver": overflow_info["driver"],
+                        "source_plate": overflow_info["plate"],
+                        "source_weight_before": overflow_info["current_weight"],
+                        "source_weight_after": round(new_source_weight, 1),
+                        "source_pct_before": overflow_info["weight_pct"],
+                        "source_pct_after": new_source_pct,
+                        "stop": {
+                            "id": candidate_stop.get("id")
+                            or candidate_stop.get("order_number"),
+                            "customer": candidate_stop.get("customer"),
+                            "address": candidate_stop.get("address"),
+                            "weight": stop_weight,
+                            "lat": candidate_stop.get("lat"),
+                            "lng": candidate_stop.get("lng"),
+                        },
+                        "target": best,
+                        "transfer_score": best["score"],
+                        "rank": len(suggestions) + 1,
+                    }
+                )
 
     # Sort by score (best first)
     suggestions.sort(key=lambda x: x["transfer_score"])
@@ -248,39 +279,51 @@ def find_transfer_suggestions(routes: list[dict], avg_speed_kmh: int = 30) -> li
 
 # ─── Execute Transfer ────────────────────────────────────────────
 
+
 def execute_transfer(
-    source_route_id: int,
-    target_route_id: int,
-    stop_id,
-    approved_by: str = "dispatcher"
+    source_route_id: int, target_route_id: int, stop_id, approved_by: str = "dispatcher"
 ) -> dict:
     """Execute transfer — ย้าย stop จาก source ไป target"""
+    import json as json_mod
+
     from database.db import SessionLocal
     from database.models import RouteDetail, RouteTransfer
-    import json as json_mod
 
     db = SessionLocal()
     try:
         if source_route_id == target_route_id:
-            return {"success": False, "error": "เส้นทางต้นทางและปลายทางต้องไม่เป็นเส้นทางเดียวกัน"}
+            return {
+                "success": False,
+                "error": "เส้นทางต้นทางและปลายทางต้องไม่เป็นเส้นทางเดียวกัน",
+            }
 
         # Load source route
-        source_route = db.query(RouteDetail).filter(RouteDetail.id == source_route_id).first()
+        source_route = (
+            db.query(RouteDetail).filter(RouteDetail.id == source_route_id).first()
+        )
         if not source_route:
             return {"success": False, "error": "ไม่พบเส้นทางต้นทาง"}
 
-        target_route = db.query(RouteDetail).filter(RouteDetail.id == target_route_id).first()
+        target_route = (
+            db.query(RouteDetail).filter(RouteDetail.id == target_route_id).first()
+        )
         if not target_route:
             return {"success": False, "error": "ไม่พบเส้นทางปลายทาง"}
 
-        source_stops = json_mod.loads(source_route.stops_json) if source_route.stops_json else []
-        target_stops = json_mod.loads(target_route.stops_json) if target_route.stops_json else []
+        source_stops = (
+            json_mod.loads(source_route.stops_json) if source_route.stops_json else []
+        )
+        target_stops = (
+            json_mod.loads(target_route.stops_json) if target_route.stops_json else []
+        )
 
         # Find the stop to move
         stop_to_move = None
         stop_index = -1
         for i, s in enumerate(source_stops):
-            if str(s.get("id")) == str(stop_id) or s.get("order_number") == str(stop_id):
+            if str(s.get("id")) == str(stop_id) or s.get("order_number") == str(
+                stop_id
+            ):
                 stop_to_move = s
                 stop_index = i
                 break
@@ -291,7 +334,7 @@ def execute_transfer(
         # Move stop
         source_stops.pop(stop_index)
         stop_to_move["transferred_from"] = source_route_id
-        stop_to_move["transferred_at"] = datetime.now(timezone.utc).isoformat()
+        stop_to_move["transferred_at"] = datetime.now(UTC).isoformat()
         target_stops.append(stop_to_move)
 
         # Re-sequence both source and target stops
@@ -307,8 +350,17 @@ def execute_transfer(
         # Capacity checks (ใช้ความจุรถจริงจากตาราง Vehicle)
         try:
             from database.models import Vehicle as VehicleModel
-            target_veh = db.query(VehicleModel).filter(VehicleModel.id == target_route.vehicle_id).first()
-            source_veh = db.query(VehicleModel).filter(VehicleModel.id == source_route.vehicle_id).first()
+
+            target_veh = (
+                db.query(VehicleModel)
+                .filter(VehicleModel.id == target_route.vehicle_id)
+                .first()
+            )
+            source_veh = (
+                db.query(VehicleModel)
+                .filter(VehicleModel.id == source_route.vehicle_id)
+                .first()
+            )
             target_capacity = target_veh.capacity if target_veh else 3750
             source_capacity = source_veh.capacity if source_veh else 3750
         except Exception:
@@ -320,13 +372,13 @@ def execute_transfer(
         if target_weight > target_capacity * TARGET_MAX:
             return {
                 "success": False,
-                "error": f"ไม่สามารถโอนได้: น้ำหนักปลายทาง {target_weight:.0f}kg เกิน {int(TARGET_MAX*100)}% ของความจุรถ ({target_capacity:.0f}kg)"
+                "error": f"ไม่สามารถโอนได้: น้ำหนักปลายทาง {target_weight:.0f}kg เกิน {int(TARGET_MAX * 100)}% ของความจุรถ ({target_capacity:.0f}kg)",
             }
 
         if source_capacity > 0 and (source_weight / source_capacity) < SOURCE_MIN_AFTER:
             return {
                 "success": False,
-                "error": f"ไม่สามารถโอนได้: เส้นทางต้นทางจะเหลือเพียง {source_weight:.0f}kg (<{int(SOURCE_MIN_AFTER*100)}% ของความจุรถ {source_capacity:.0f}kg)"
+                "error": f"ไม่สามารถโอนได้: เส้นทางต้นทางจะเหลือเพียง {source_weight:.0f}kg (<{int(SOURCE_MIN_AFTER * 100)}% ของความจุรถ {source_capacity:.0f}kg)",
             }
 
         source_route.stops_json = json_mod.dumps(source_stops, ensure_ascii=False)
@@ -349,7 +401,9 @@ def execute_transfer(
         db.add(transfer_log)
         db.commit()
 
-        logger.info(f"Transfer executed: stop {stop_id} from route {source_route_id} → {target_route_id}")
+        logger.info(
+            f"Transfer executed: stop {stop_id} from route {source_route_id} → {target_route_id}"
+        )
         return {
             "success": True,
             "stop_id": stop_id,
@@ -360,7 +414,7 @@ def execute_transfer(
         }
     except Exception as e:
         db.rollback()
-        logger.error(f"Error executing transfer: {e}", exc_info=True)
+        logger.exception("Error executing transfer")
         return {"success": False, "error": str(e)}
     finally:
         db.close()
@@ -368,11 +422,13 @@ def execute_transfer(
 
 # ─── Re-calculate Route After Transfer ───────────────────────────
 
-def recalculate_route_after_transfer(route_id: int, depot_lat: float = 13.781882, depot_lng: float = 100.425041) -> dict:
+
+def recalculate_route_after_transfer(
+    route_id: int, depot_lat: float = 13.781882, depot_lng: float = 100.425041
+) -> dict:
     """คำนวณเส้นทางใหม่หลังย้าย stop"""
     from database.db import SessionLocal
     from database.models import RouteDetail
-    from services.route_optimizer import _solve_vrp
     from services.distance_matrix_real import _haversine_distance_matrix
 
     db = SessionLocal()
@@ -390,7 +446,9 @@ def recalculate_route_after_transfer(route_id: int, depot_lat: float = 13.781882
         if len(coord_stops) < 2:
             return {"success": True, "message": "ไม่มีพิกัดพอคำนวณ"}
 
-        points = [{"lat": depot_lat, "lng": depot_lng}] + [{"lat": s["lat"], "lng": s["lng"]} for s in coord_stops]
+        points = [{"lat": depot_lat, "lng": depot_lng}] + [
+            {"lat": s["lat"], "lng": s["lng"]} for s in coord_stops
+        ]
 
         # Use simple nearest-neighbor for reordering (fast)
         dm = _haversine_distance_matrix(points)
@@ -425,7 +483,7 @@ def recalculate_route_after_transfer(route_id: int, depot_lat: float = 13.781882
         return {"success": True, "route_id": route_id, "new_sequence": len(reordered)}
     except Exception as e:
         db.rollback()
-        logger.error(f"Error recalculating route: {e}", exc_info=True)
+        logger.exception("Error recalculating route")
         return {"success": False, "error": str(e)}
     finally:
         db.close()

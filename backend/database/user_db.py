@@ -1,20 +1,24 @@
 """Employee (User) management database operations + audit logging."""
 
-from datetime import datetime, timezone
-from typing import Optional
-from fastapi import HTTPException
-from sqlalchemy import func, text
-
-from database.models import User as UserModel, AuditLog
-from database.db import SessionLocal
-from auth import pwd_context, validate_password_complexity
-
-logger = logging.getLogger(__name__) if False else None
 import logging
+from datetime import UTC, datetime
+
+from fastapi import HTTPException
+from sqlalchemy import func
+
+from auth import pwd_context, validate_password_complexity
+from database.db import SessionLocal
+from database.models import AuditLog
+from database.models import User as UserModel
+
+logger = logging.getLogger(__name__)
+
 logger = logging.getLogger(__name__)
 
 
-def log_audit(user_id: int, username: str, action: str, target_user: str = "", details: str = "") -> None:
+def log_audit(
+    user_id: int, username: str, action: str, target_user: str = "", details: str = ""
+) -> None:
     """บันทึก audit log ลงตาราง audit_logs"""
     db = SessionLocal()
     try:
@@ -24,7 +28,7 @@ def log_audit(user_id: int, username: str, action: str, target_user: str = "", d
             action=action,
             target_user=target_user,
             details=details,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
         db.add(entry)
         db.commit()
@@ -39,9 +43,12 @@ def count_admins() -> int:
     """นับจำนวน admin ที่ยังเปิดใช้งานอยู่"""
     db = SessionLocal()
     try:
-        return db.query(func.count(UserModel.id)).filter(
-            UserModel.role == "admin", UserModel.is_active == True
-        ).scalar() or 0
+        return (
+            db.query(func.count(UserModel.id))
+            .filter(UserModel.role == "admin", UserModel.is_active == True)
+            .scalar()
+            or 0
+        )
     finally:
         db.close()
 
@@ -55,7 +62,7 @@ def create_employee(
     phone: str = "",
     department: str = "",
     position: str = "",
-    actor: dict = None,
+    actor: dict | None = None,
     consent_given: bool = False,
     privacy_policy_version: str = "",
 ) -> dict:
@@ -69,7 +76,7 @@ def create_employee(
         if existing_admins >= 1:
             raise HTTPException(
                 status_code=403,
-                detail="ไม่สามารถสร้าง admin ได้อีก — ระบบรองรับ admin เพียง 1 คนเท่านั้น"
+                detail="ไม่สามารถสร้าง admin ได้อีก — ระบบรองรับ admin เพียง 1 คนเท่านั้น",
             )
 
     validate_password_complexity(password)
@@ -78,9 +85,12 @@ def create_employee(
     try:
         existing = db.query(UserModel).filter(UserModel.username == username).first()
         if existing:
-            raise HTTPException(status_code=409, detail=f"User '{username}' already exists")
+            raise HTTPException(
+                status_code=409, detail=f"User '{username}' already exists"
+            )
 
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         user = UserModel(
             username=username,
             password_hash=pwd_context.hash(password),
@@ -92,7 +102,7 @@ def create_employee(
             position=position,
             is_active=True,
             consent_given=consent_given,
-            consent_date=datetime.now(timezone.utc) if consent_given else None,
+            consent_date=datetime.now(UTC) if consent_given else None,
             privacy_policy_version=privacy_policy_version or "",
         )
         db.add(user)
@@ -129,7 +139,7 @@ def create_employee(
         db.close()
 
 
-def update_employee(user_id: int, updates: dict, actor: dict = None) -> dict:
+def update_employee(user_id: int, updates: dict, actor: dict | None = None) -> dict:
     """อัปเดตข้อมูลพนักงาน (admin only) — ห้ามเปลี่ยน role เป็น admin"""
     db = SessionLocal()
     try:
@@ -142,8 +152,7 @@ def update_employee(user_id: int, updates: dict, actor: dict = None) -> dict:
         if new_role is not None:
             if new_role == "admin" and user.role != "admin":
                 raise HTTPException(
-                    status_code=403,
-                    detail="ไม่สามารถเปลี่ยน role เป็น admin ได้"
+                    status_code=403, detail="ไม่สามารถเปลี่ยน role เป็น admin ได้"
                 )
             if new_role not in ("admin", "dispatcher", "driver", "user"):
                 raise HTTPException(status_code=400, detail=f"Invalid role: {new_role}")
@@ -193,7 +202,9 @@ def update_employee(user_id: int, updates: dict, actor: dict = None) -> dict:
         db.close()
 
 
-def change_employee_password(user_id: int, new_password: str, actor: dict = None) -> dict:
+def change_employee_password(
+    user_id: int, new_password: str, actor: dict | None = None
+) -> dict:
     """เปลี่ยนรหัสผ่านพนักงาน"""
     validate_password_complexity(new_password)
 
@@ -213,7 +224,10 @@ def change_employee_password(user_id: int, new_password: str, actor: dict = None
             target_user=user.username,
         )
 
-        return {"status": "success", "message": f"เปลี่ยนรหัสผ่านสำหรับ {user.username} เรียบร้อยแล้ว"}
+        return {
+            "status": "success",
+            "message": f"เปลี่ยนรหัสผ่านสำหรับ {user.username} เรียบร้อยแล้ว",
+        }
     except HTTPException:
         db.rollback()
         raise
@@ -225,7 +239,7 @@ def change_employee_password(user_id: int, new_password: str, actor: dict = None
         db.close()
 
 
-def toggle_employee_active(user_id: int, actor: dict = None) -> dict:
+def toggle_employee_active(user_id: int, actor: dict | None = None) -> dict:
     """เปิด/ปิดการใช้งานพนักงาน — ห้ามปิดตัวเอง"""
     db = SessionLocal()
     try:
@@ -236,8 +250,7 @@ def toggle_employee_active(user_id: int, actor: dict = None) -> dict:
         # ห้ามปิดใช้งานตัวเอง
         if actor and actor.get("id") == user.id:
             raise HTTPException(
-                status_code=400,
-                detail="ไม่สามารถปิดการใช้งานบัญชีของตัวเองได้"
+                status_code=400, detail="ไม่สามารถปิดการใช้งานบัญชีของตัวเองได้"
             )
 
         user.is_active = not user.is_active
@@ -263,7 +276,9 @@ def toggle_employee_active(user_id: int, actor: dict = None) -> dict:
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to toggle active for user {user_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to toggle user active state")
+        raise HTTPException(
+            status_code=500, detail="Failed to toggle user active state"
+        )
     finally:
         db.close()
 
@@ -297,7 +312,7 @@ def list_employees(
     page_size: int = 20,
     search: str = "",
     role: str = "",
-    active: Optional[bool] = None,
+    active: bool | None = None,
 ) -> dict:
     """ดึงรายชื่อพนักงานแบบแบ่งหน้า + กรอง/ค้นหา"""
     db = SessionLocal()
@@ -307,11 +322,11 @@ def list_employees(
         if search:
             like = f"%{search}%"
             query = query.filter(
-                (UserModel.username.ilike(like)) |
-                (UserModel.name.ilike(like)) |
-                (UserModel.email.ilike(like)) |
-                (UserModel.department.ilike(like)) |
-                (UserModel.position.ilike(like))
+                (UserModel.username.ilike(like))
+                | (UserModel.name.ilike(like))
+                | (UserModel.email.ilike(like))
+                | (UserModel.department.ilike(like))
+                | (UserModel.position.ilike(like))
             )
 
         if role:
@@ -324,7 +339,12 @@ def list_employees(
         pages = max(1, (total + page_size - 1) // page_size)
         page = max(1, min(page, pages))
 
-        rows = query.order_by(UserModel.username).offset((page - 1) * page_size).limit(page_size).all()
+        rows = (
+            query.order_by(UserModel.username)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
 
         employees = [
             {
@@ -365,7 +385,12 @@ def get_audit_logs(page: int = 1, limit: int = 50, username: str = "") -> dict:
         pages = max(1, (total + limit - 1) // limit)
         page = max(1, min(page, pages))
 
-        rows = query.order_by(AuditLog.timestamp.desc()).offset((page - 1) * limit).limit(limit).all()
+        rows = (
+            query.order_by(AuditLog.timestamp.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
+            .all()
+        )
 
         logs = [
             {

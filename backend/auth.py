@@ -5,17 +5,17 @@ Phase 2: JWT + RBAC (admin/dispatcher/driver)
 Phase 3: bcrypt password hashing
 """
 
-import os
-import sys
 import hmac
-import secrets
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional
-from fastapi import HTTPException, Security, Depends, Request
-from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
-from passlib.context import CryptContext
+import os
+import secrets
+import sys
+from datetime import UTC, datetime, timedelta
+
+from fastapi import Depends, HTTPException, Request, Security
+from fastapi.security import APIKeyHeader, HTTPBearer
 from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,9 @@ API_KEYS = [key.strip() for key in API_KEYS if key.strip()]
 PRODUCTION_MODE = os.getenv("PRODUCTION_MODE", "false").lower() == "true"
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8 hours
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(
+    os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "480")
+)  # 8 hours
 
 # JWT key persistence file (dev mode only)
 _JWT_SECRET_FILE = os.path.join(os.path.dirname(__file__), ".jwt_secret")
@@ -59,7 +61,9 @@ if not JWT_SECRET_KEY:
                 os.umask(old_umask)
             logger.info("Generated and saved JWT_SECRET_KEY to .jwt_secret file")
         except OSError:
-            logger.warning("Could not save JWT_SECRET_KEY to file — tokens will not persist across restarts")
+            logger.warning(
+                "Could not save JWT_SECRET_KEY to file — tokens will not persist across restarts"
+            )
     logger.warning("Set JWT_SECRET_KEY env var for production use!")
 
 # API Key header
@@ -78,14 +82,15 @@ DISPATCHER_KEYS = [key.strip() for key in DISPATCHER_KEYS if key.strip()]
 
 # ─── JWT Token Functions ──────────────────────────────────────────
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """สร้าง JWT access token"""
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
+        expire = datetime.now(UTC) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    
+        expire = datetime.now(UTC) + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return encoded_jwt
@@ -119,6 +124,7 @@ def revoke_token(token: str) -> None:
 
 # ─── Authentication Functions ─────────────────────────────────────
 
+
 def _key_in_list(key: str, key_list: list[str]) -> bool:
     """Constant-time key comparison to prevent timing attacks."""
     return any(hmac.compare_digest(key, k) for k in key_list)
@@ -127,16 +133,17 @@ def _key_in_list(key: str, key_list: list[str]) -> bool:
 def get_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
     """Validate API Key from header"""
     if not API_KEYS:
-        logger.critical("No API_KEYS configured — denying all requests. Set API_KEYS env var.")
-        raise HTTPException(status_code=500, detail="Server misconfiguration: API_KEYS not set")
-    
+        logger.critical(
+            "No API_KEYS configured — denying all requests. Set API_KEYS env var."
+        )
+        raise HTTPException(
+            status_code=500, detail="Server misconfiguration: API_KEYS not set"
+        )
+
     if api_key and _key_in_list(api_key, API_KEYS):
         return api_key
-    
-    raise HTTPException(
-        status_code=401,
-        detail="Invalid or missing API Key"
-    )
+
+    raise HTTPException(status_code=401, detail="Invalid or missing API Key")
 
 
 def get_current_user(request: Request) -> dict:
@@ -152,28 +159,37 @@ def get_current_user(request: Request) -> dict:
             return db_user
         # JWT valid but user not found — don't fall through to API key
         raise HTTPException(status_code=401, detail="User not found")
-    
+
     # ลอง API Key
     api_key = request.headers.get("X-API-Key")
     if api_key:
         if ADMIN_KEYS and _key_in_list(api_key, ADMIN_KEYS):
             return {"username": "admin", "role": "admin", "name": "Admin (API Key)"}
         elif DISPATCHER_KEYS and _key_in_list(api_key, DISPATCHER_KEYS):
-            return {"username": "dispatcher", "role": "dispatcher", "name": "Dispatcher (API Key)"}
+            return {
+                "username": "dispatcher",
+                "role": "dispatcher",
+                "name": "Dispatcher (API Key)",
+            }
         elif _key_in_list(api_key, API_KEYS):
             return {"username": "api_user", "role": "user", "name": "API User"}
-    
+
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
-def _get_db_user(username: str) -> Optional[dict]:
+def _get_db_user(username: str) -> dict | None:
     """ค้นหาผู้ใช้จากตาราง users ในฐานข้อมูล"""
     try:
-        from database.models import User as UserModel
         from database.db import SessionLocal
+        from database.models import User as UserModel
+
         db = SessionLocal()
         try:
-            row = db.query(UserModel).filter(UserModel.username == username, UserModel.is_active == True).first()
+            row = (
+                db.query(UserModel)
+                .filter(UserModel.username == username, UserModel.is_active == True)
+                .first()
+            )
             if not row:
                 return None
             return {
@@ -206,16 +222,14 @@ def verify_admin_key(api_key: str = Depends(get_api_key)) -> str:
     if not ADMIN_KEYS:
         logger.warning("ADMIN_KEYS not configured — denying admin access")
         raise HTTPException(
-            status_code=403,
-            detail="Admin keys not configured. Set ADMIN_KEYS env var."
+            status_code=403, detail="Admin keys not configured. Set ADMIN_KEYS env var."
         )
-    
+
     if _key_in_list(api_key, ADMIN_KEYS):
         return api_key
-    
+
     raise HTTPException(
-        status_code=403,
-        detail="Insufficient permissions - admin access required"
+        status_code=403, detail="Insufficient permissions - admin access required"
     )
 
 
@@ -225,27 +239,30 @@ def verify_dispatcher_key(api_key: str = Depends(get_api_key)) -> str:
         logger.warning("DISPATCHER_KEYS not configured — denying dispatcher access")
         raise HTTPException(
             status_code=403,
-            detail="Dispatcher keys not configured. Set DISPATCHER_KEYS env var."
+            detail="Dispatcher keys not configured. Set DISPATCHER_KEYS env var.",
         )
-    
-    if (DISPATCHER_KEYS and _key_in_list(api_key, DISPATCHER_KEYS)) or (ADMIN_KEYS and _key_in_list(api_key, ADMIN_KEYS)):
+
+    if (DISPATCHER_KEYS and _key_in_list(api_key, DISPATCHER_KEYS)) or (
+        ADMIN_KEYS and _key_in_list(api_key, ADMIN_KEYS)
+    ):
         return api_key
-    
+
     raise HTTPException(
-        status_code=403,
-        detail="Insufficient permissions - dispatcher access required"
+        status_code=403, detail="Insufficient permissions - dispatcher access required"
     )
 
 
 def require_role(allowed_roles: list[str]):
     """Dependency factory สำหรับตรวจสอบ role"""
+
     def role_checker(user: dict = Depends(get_current_user)) -> dict:
         if user.get("role") not in allowed_roles:
             raise HTTPException(
                 status_code=403,
-                detail=f"Insufficient permissions. Required roles: {', '.join(allowed_roles)}"
+                detail=f"Insufficient permissions. Required roles: {', '.join(allowed_roles)}",
             )
         return user
+
     return role_checker
 
 
@@ -259,27 +276,29 @@ _LOCKOUT_MINUTES = 15
 
 def _check_login_lockout(username: str) -> None:
     """ตรวจสอบว่า username ถูกล็อกจากการพยายาม login ผิดหลายครั้ง"""
-    from datetime import datetime, timedelta, timezone
-    now = datetime.now(timezone.utc)
+    from datetime import datetime, timedelta
+
+    now = datetime.now(UTC)
     if username in _login_attempts:
         # ลบ attempts เก่ากว่า LOCKOUT_MINUTES
         _login_attempts[username] = [
-            ts for ts in _login_attempts[username]
+            ts
+            for ts in _login_attempts[username]
             if now - ts < timedelta(minutes=_LOCKOUT_MINUTES)
         ]
         if len(_login_attempts[username]) >= _MAX_ATTEMPTS:
             raise HTTPException(
-                status_code=429,
-                detail=f"บัญชีถูกล็อก กรุณาลองใหม่ใน {_LOCKOUT_MINUTES} นาที"
+                status_code=429, detail=f"บัญชีถูกล็อก กรุณาลองใหม่ใน {_LOCKOUT_MINUTES} นาที"
             )
 
 
 def _record_login_failure(username: str) -> None:
     """บันทึกความล้มเหลวในการ login"""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     if username not in _login_attempts:
         _login_attempts[username] = []
-    _login_attempts[username].append(datetime.now(timezone.utc))
+    _login_attempts[username].append(datetime.now(UTC))
 
 
 def _clear_login_attempts(username: str) -> None:
@@ -287,13 +306,18 @@ def _clear_login_attempts(username: str) -> None:
     _login_attempts.pop(username, None)
 
 
-def authenticate_user(username: str, password: str) -> Optional[dict]:
+def authenticate_user(username: str, password: str) -> dict | None:
     """ตรวจสอบ username/password — เช็คตาราง users ในฐานข้อมูลเท่านั้น"""
-    from database.models import User as UserModel
     from database.db import SessionLocal
+    from database.models import User as UserModel
+
     db = SessionLocal()
     try:
-        row = db.query(UserModel).filter(UserModel.username == username, UserModel.is_active == True).first()
+        row = (
+            db.query(UserModel)
+            .filter(UserModel.username == username, UserModel.is_active == True)
+            .first()
+        )
         if row and pwd_context.verify(password, row.password_hash):
             return {
                 "id": row.id,
@@ -306,11 +330,19 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
     return None
 
 
-def create_user(username: str, password: str, role: str = "user", name: str = "",
-                email: str = "", phone: str = "", department: str = "", position: str = "") -> dict:
+def create_user(
+    username: str,
+    password: str,
+    role: str = "user",
+    name: str = "",
+    email: str = "",
+    phone: str = "",
+    department: str = "",
+    position: str = "",
+) -> dict:
     """สร้างผู้ใช้ในฐานข้อมูล (bcrypt hash) — ใช้สำหรับ production"""
-    from database.models import User as UserModel
     from database.db import SessionLocal
+    from database.models import User as UserModel
 
     if role not in ("admin", "dispatcher", "driver", "user"):
         raise HTTPException(status_code=400, detail=f"Invalid role: {role}")
@@ -321,7 +353,9 @@ def create_user(username: str, password: str, role: str = "user", name: str = ""
     try:
         existing = db.query(UserModel).filter(UserModel.username == username).first()
         if existing:
-            raise HTTPException(status_code=409, detail=f"User '{username}' already exists")
+            raise HTTPException(
+                status_code=409, detail=f"User '{username}' already exists"
+            )
         user = UserModel(
             username=username,
             password_hash=pwd_context.hash(password),
@@ -350,8 +384,9 @@ def create_user(username: str, password: str, role: str = "user", name: str = ""
 
 def list_users_from_db() -> list[dict]:
     """ดึงรายชื่อผู้ใช้ทั้งหมดจากฐานข้อมูล"""
-    from database.models import User as UserModel
     from database.db import SessionLocal
+    from database.models import User as UserModel
+
     db = SessionLocal()
     try:
         rows = db.query(UserModel).order_by(UserModel.username).all()
@@ -384,17 +419,14 @@ def login_user(username: str, password: str) -> dict:
     if not user:
         _record_login_failure(username)
         logger.warning(f"Failed login attempt for username: {username}")
-        raise HTTPException(
-            status_code=401,
-            detail="Incorrect username or password"
-        )
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
 
     _clear_login_attempts(username)
     logger.info(f"Successful login: {username} (role={user['role']})")
     access_token = create_access_token(
         data={"sub": user["username"], "role": user["role"], "user_id": user["id"]}
     )
-    
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -402,6 +434,6 @@ def login_user(username: str, password: str) -> dict:
             "id": user["id"],
             "username": user["username"],
             "role": user["role"],
-            "name": user["name"]
-        }
+            "name": user["name"],
+        },
     }

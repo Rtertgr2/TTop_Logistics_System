@@ -3,24 +3,32 @@
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from sqlalchemy import text
 
 from database.connection import SessionLocal, _business_today, _record_db_metric
 from database.models import (
-    Order, OrderItem, Vehicle, RoutePlan, RouteDetail,
-    CustomerLocation, StopStatusHistory, ItemDelivery, RouteTransfer,
+    CustomerLocation,
+    ItemDelivery,
+    Order,
+    OrderItem,
+    RouteDetail,
+    RoutePlan,
+    RouteTransfer,
+    StopStatusHistory,
+    Vehicle,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def save_route_plan(routes: list[dict], depot: dict = None) -> int:
+def save_route_plan(routes: list[dict], depot: dict | None = None) -> int:
     """บันทึกผลการจัดคิวรถ (Route Plan) ลง Database"""
     db = SessionLocal()
     start_time = time.time()
     try:
-        plan_date = datetime.now(timezone.utc)
+        plan_date = datetime.now(UTC)
         total_orders = sum(len(r.get("stops", [])) for r in routes)
         total_vehicles = len(routes)
         depot_addr = depot.get("address", "") if depot else ""
@@ -29,7 +37,7 @@ def save_route_plan(routes: list[dict], depot: dict = None) -> int:
             plan_date=plan_date,
             total_orders=total_orders,
             total_vehicles=total_vehicles,
-            depot_address=depot_addr
+            depot_address=depot_addr,
         )
         db.add(plan)
         db.flush()
@@ -45,13 +53,15 @@ def save_route_plan(routes: list[dict], depot: dict = None) -> int:
                 driver=route.get("driver"),
                 total_weight=route.get("total_weight"),
                 google_maps_link=route.get("google_maps_link"),
-                stops_json=stops_json
+                stops_json=stops_json,
             )
             db.add(detail)
 
         db.commit()
         _record_db_metric("save", "route_plans", start_time, True)
-        logger.info(f"Saved Route Plan #{plan_id} with {len(routes)} vehicles to Database")
+        logger.info(
+            f"Saved Route Plan #{plan_id} with {len(routes)} vehicles to Database"
+        )
         return plan_id
     except Exception as e:
         db.rollback()
@@ -67,14 +77,23 @@ def get_today_active_routes() -> list[dict]:
     db = SessionLocal()
     try:
         today, tz = _business_today()
-        plan = db.query(RoutePlan).filter(
-            text("DATE(plan_date AT TIME ZONE :tz) = :today")
-        ).params(today=today, tz=tz).order_by(RoutePlan.id.desc()).first()
+        plan = (
+            db.query(RoutePlan)
+            .filter(text("DATE(plan_date AT TIME ZONE :tz) = :today"))
+            .params(today=today, tz=tz)
+            .order_by(RoutePlan.id.desc())
+            .first()
+        )
 
         if not plan:
             return []
 
-        details = db.query(RouteDetail).filter(RouteDetail.plan_id == plan.id).order_by(RouteDetail.vehicle_id.asc()).all()
+        details = (
+            db.query(RouteDetail)
+            .filter(RouteDetail.plan_id == plan.id)
+            .order_by(RouteDetail.vehicle_id.asc())
+            .all()
+        )
         capacity_map = {v.id: v.capacity for v in db.query(Vehicle).all()}
         routes = []
         for d in details:
@@ -87,7 +106,7 @@ def get_today_active_routes() -> list[dict]:
                 "capacity": capacity_map.get(d.vehicle_id, 3750),
                 "total_weight": d.total_weight,
                 "google_maps_link": d.google_maps_link,
-                "stops": json.loads(d.stops_json) if d.stops_json else []
+                "stops": json.loads(d.stops_json) if d.stops_json else [],
             }
             routes.append(rd)
         return routes
@@ -109,10 +128,15 @@ def get_route_history(limit: int = 20) -> list[dict]:
                 "total_orders": plan.total_orders,
                 "total_vehicles": plan.total_vehicles,
                 "depot_address": plan.depot_address,
-                "created_at": plan.created_at
+                "created_at": plan.created_at,
             }
 
-            details = db.query(RouteDetail).filter(RouteDetail.plan_id == plan.id).order_by(RouteDetail.vehicle_id.asc()).all()
+            details = (
+                db.query(RouteDetail)
+                .filter(RouteDetail.plan_id == plan.id)
+                .order_by(RouteDetail.vehicle_id.asc())
+                .all()
+            )
             routes = []
             for d in details:
                 rd = {
@@ -124,7 +148,7 @@ def get_route_history(limit: int = 20) -> list[dict]:
                     "capacity": capacity_map.get(d.vehicle_id, 3750),
                     "total_weight": d.total_weight,
                     "google_maps_link": d.google_maps_link,
-                    "stops": json.loads(d.stops_json) if d.stops_json else []
+                    "stops": json.loads(d.stops_json) if d.stops_json else [],
                 }
                 routes.append(rd)
             p["routes"] = routes
@@ -151,17 +175,22 @@ def get_driver_route(driver_name: str) -> dict | None:
     db = SessionLocal()
     try:
         today, tz = _business_today()
-        plan = db.query(RoutePlan).filter(
-            text("DATE(plan_date AT TIME ZONE :tz) = :today")
-        ).params(today=today, tz=tz).order_by(RoutePlan.id.desc()).first()
+        plan = (
+            db.query(RoutePlan)
+            .filter(text("DATE(plan_date AT TIME ZONE :tz) = :today"))
+            .params(today=today, tz=tz)
+            .order_by(RoutePlan.id.desc())
+            .first()
+        )
 
         if not plan:
             return None
 
-        details = db.query(RouteDetail).filter(
-            RouteDetail.plan_id == plan.id,
-            RouteDetail.driver == driver_name
-        ).all()
+        details = (
+            db.query(RouteDetail)
+            .filter(RouteDetail.plan_id == plan.id, RouteDetail.driver == driver_name)
+            .all()
+        )
 
         if not details:
             return None

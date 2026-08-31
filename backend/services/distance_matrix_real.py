@@ -8,7 +8,8 @@ Enhanced Distance Matrix with Google Distance Matrix API
 
 import logging
 import time
-from config import GOOGLE_MAPS_API_KEY, DEPOT_LAT, DEPOT_LNG, SNAP_TO_ROAD_ENABLED
+
+from config import DEPOT_LAT, DEPOT_LNG, GOOGLE_MAPS_API_KEY, SNAP_TO_ROAD_ENABLED
 from services.geo_utils import haversine_km
 from services.road_snapping import snap_nearest_roads
 
@@ -17,18 +18,24 @@ logger = logging.getLogger(__name__)
 # Lazy import googlemaps to avoid crash if not installed
 _googlemaps = None
 
+
 def _get_googlemaps():
     global _googlemaps
     if _googlemaps is None:
         try:
             import googlemaps
+
             _googlemaps = googlemaps
         except ImportError:
-            logger.warning("googlemaps package not installed — using Haversine fallback")
+            logger.warning(
+                "googlemaps package not installed — using Haversine fallback"
+            )
     return _googlemaps
+
 
 # Bounded in-memory cache with TTL (fallback when Redis unavailable)
 import threading as _threading
+
 _MATRIX_CACHE = {}
 _MATRIX_CACHE_LOCK = _threading.Lock()
 _CACHE_MAX_SIZE = 50
@@ -46,7 +53,7 @@ def _cache_set(key, data):
 
 def _get_cached_matrix(key):
     """Try Redis cache first, then in-memory fallback."""
-    from services.cache import get_cached, set_cached
+    from services.cache import get_cached
 
     # 1. Try Redis
     redis_data = get_cached(f"dm:{key}")
@@ -75,7 +82,9 @@ def _set_cached_matrix(key, data):
     _cache_set(key, data)
 
 
-def get_distance_matrix_real(orders: list[dict], depot: dict = None) -> list[list[float]]:
+def get_distance_matrix_real(
+    orders: list[dict], depot: dict | None = None
+) -> list[list[float]]:
     """สร้าง distance matrix ระหว่างทุกจุด (depot + orders) พร้อม Redis + In-Memory Caching
 
     ใช้ Google Distance Matrix API สำหรับเส้นทางจริง
@@ -142,7 +151,9 @@ def get_distance_matrix_real(orders: list[dict], depot: dict = None) -> list[lis
             return res
 
     except Exception as e:
-        logger.warning(f"Distance matrix API error: {e} — ใช้ Haversine distance matrix สำรอง")
+        logger.warning(
+            f"Distance matrix API error: {e} — ใช้ Haversine distance matrix สำรอง"
+        )
         res = _haversine_distance_matrix(all_points)
         _set_cached_matrix(cache_key, res)
         return res
@@ -169,7 +180,9 @@ def _single_distance_matrix(gmaps, origins: list[str]) -> list[list[float]] | No
         return None
 
 
-def _batch_distance_matrix(gmaps, origins: list[str], batch_size: int = 25) -> list[list[float]] | None:
+def _batch_distance_matrix(
+    gmaps, origins: list[str], batch_size: int = 25
+) -> list[list[float]] | None:
     """แบ่ง batch เรียก Google Distance Matrix API สำหรับจุด > 25 จุด (จำกัดไม่เกิน 625 elements/req)"""
     try:
         n = len(origins)
@@ -177,17 +190,23 @@ def _batch_distance_matrix(gmaps, origins: list[str], batch_size: int = 25) -> l
 
         safe_batch = min(batch_size, max(1, 625 // n))
         if safe_batch < batch_size:
-            logger.info(f"Reducing batch size from {batch_size} to {safe_batch} to stay under Google element limit")
+            logger.info(
+                f"Reducing batch size from {batch_size} to {safe_batch} to stay under Google element limit"
+            )
 
         for i in range(0, n, safe_batch):
-            batch_origins = origins[i:i + safe_batch]
+            batch_origins = origins[i : i + safe_batch]
 
-            result = gmaps.distance_matrix(batch_origins, origins, mode="driving", language="th")
+            result = gmaps.distance_matrix(
+                batch_origins, origins, mode="driving", language="th"
+            )
 
             for row_idx, row in enumerate(result["rows"]):
                 for col_idx, element in enumerate(row["elements"]):
                     if element["status"] == "OK":
-                        matrix[i + row_idx][col_idx] = element["distance"]["value"] / 1000
+                        matrix[i + row_idx][col_idx] = (
+                            element["distance"]["value"] / 1000
+                        )
                     else:
                         matrix[i + row_idx][col_idx] = float("inf")
 
@@ -216,6 +235,5 @@ def _haversine_distance_matrix(points: list[dict]) -> list[list[float]]:
 
 def clear_cache():
     """ล้าง cache ของ distance matrix"""
-    from services.cache import delete_cached
     _MATRIX_CACHE.clear()
     logger.info("Distance matrix cache cleared")

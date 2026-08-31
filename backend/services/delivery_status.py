@@ -4,7 +4,6 @@ Manages stop status transitions: PENDING → IN_TRANSIT → ARRIVED → DELIVERE
 """
 
 import logging
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +31,12 @@ STATUS_LABELS = {
 
 # Status colors for UI
 STATUS_COLORS = {
-    "PENDING": "#6b7280",      # gray
-    "IN_TRANSIT": "#3b82f6",   # blue
-    "ARRIVED": "#f59e0b",      # amber
-    "DELIVERED": "#10b981",    # green
-    "FAILED": "#ef4444",       # red
-    "PARTIAL": "#8b5cf6",      # purple
+    "PENDING": "#6b7280",  # gray
+    "IN_TRANSIT": "#3b82f6",  # blue
+    "ARRIVED": "#f59e0b",  # amber
+    "DELIVERED": "#10b981",  # green
+    "FAILED": "#ef4444",  # red
+    "PARTIAL": "#8b5cf6",  # purple
     "RESCHEDULED": "#06b6d4",  # cyan
 }
 
@@ -95,7 +94,12 @@ def calculate_delivery_summary(stops: list[dict]) -> dict:
         elif status == "RESCHEDULED":
             summary["rescheduled"] += 1
 
-    completed = summary["delivered"] + summary["failed"] + summary["partial"] + summary["rescheduled"]
+    completed = (
+        summary["delivered"]
+        + summary["failed"]
+        + summary["partial"]
+        + summary["rescheduled"]
+    )
     if summary["total"] > 0:
         summary["completion_pct"] = round((completed / summary["total"]) * 100)
 

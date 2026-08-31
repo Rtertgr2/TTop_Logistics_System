@@ -1,5 +1,7 @@
 import logging
+
 import requests
+
 from config import LINE_CHANNEL_ACCESS_TOKEN, LINE_DEFAULT_USER_ID
 
 logger = logging.getLogger(__name__)
@@ -7,11 +9,16 @@ logger = logging.getLogger(__name__)
 LINE_API_URL = "https://api.line.me/v2/bot/message/push"
 
 
-def send_route_notification(routes: list[dict], user_id: str = None) -> dict:
+def send_route_notification(routes: list[dict], user_id: str | None = None) -> dict:
     """ส่ง notification สรุปแผนเส้นทางไปยัง LINE"""
     if not LINE_CHANNEL_ACCESS_TOKEN:
-        logger.warning("LINE_CHANNEL_ACCESS_TOKEN ไม่ได้ตั้งค่า — ข้ามการส่ง LINE notification")
-        return {"status": "skipped", "message": "LINE ยังไม่ได้ตั้งค่า (ตรวจสอบ LINE_CHANNEL_ACCESS_TOKEN ใน .env)"}
+        logger.warning(
+            "LINE_CHANNEL_ACCESS_TOKEN ไม่ได้ตั้งค่า — ข้ามการส่ง LINE notification"
+        )
+        return {
+            "status": "skipped",
+            "message": "LINE ยังไม่ได้ตั้งค่า (ตรวจสอบ LINE_CHANNEL_ACCESS_TOKEN ใน .env)",
+        }
 
     target_user_id = user_id or LINE_DEFAULT_USER_ID
     if not target_user_id:
@@ -23,32 +30,36 @@ def send_route_notification(routes: list[dict], user_id: str = None) -> dict:
     # LINE Messaging API มีขีดจำกัด 5000 ตัวอักษรต่อข้อความ
     _LINE_MAX_CHARS = 4900  # เผื่อ margin
     if len(message) > _LINE_MAX_CHARS:
-        message = message[:_LINE_MAX_CHARS] + "\n\n... (ข้อความถูกตัด — ดูรายละเอียดเพิ่มเติมในระบบ)"
+        message = (
+            message[:_LINE_MAX_CHARS] + "\n\n... (ข้อความถูกตัด — ดูรายละเอียดเพิ่มเติมในระบบ)"
+        )
 
     try:
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+            "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
         }
         payload = {
             "to": target_user_id,
-            "messages": [
-                {
-                    "type": "text",
-                    "text": message
-                }
-            ]
+            "messages": [{"type": "text", "text": message}],
         }
 
-        response = requests.post(LINE_API_URL, json=payload, headers=headers, timeout=10)
+        response = requests.post(
+            LINE_API_URL, json=payload, headers=headers, timeout=10
+        )
 
         if response.status_code == 200:
             logger.info(f"ส่ง LINE notification สำเร็จไปยัง {target_user_id[:4]}****")
             return {"status": "sent", "message": "ส่ง LINE notification สำเร็จ"}
         else:
             error_msg = response.text
-            logger.error(f"ส่ง LINE notification ไม่สำเร็จ: {response.status_code} - {error_msg}")
-            return {"status": "error", "message": f"ไม่สามารถส่ง LINE notification: {error_msg}"}
+            logger.error(
+                f"ส่ง LINE notification ไม่สำเร็จ: {response.status_code} - {error_msg}"
+            )
+            return {
+                "status": "error",
+                "message": f"ไม่สามารถส่ง LINE notification: {error_msg}",
+            }
 
     except Exception as e:
         logger.error(f"LINE notification error: {e}")
@@ -76,7 +87,7 @@ def _build_route_message(routes: list[dict]) -> str:
             message += f" ({plate})"
         if driver:
             message += f" — คนขับ: {driver}"
-        message += f"\n"
+        message += "\n"
         message += f"   น้ำหนัก: {total_weight}/{capacity} kg\n"
         message += f"   จำนวนจุดส่ง: {len(stops)} จุด\n"
 
@@ -84,7 +95,7 @@ def _build_route_message(routes: list[dict]) -> str:
             message += "   จุดส่ง:\n"
             for i, stop in enumerate(stops[:5], 1):  # แสดงแค่ 5 จุดแรก
                 customer = stop.get("customer", "")
-                address = stop.get("address", "")
+                stop.get("address", "")
                 weight = stop.get("weight", 0)
                 message += f"   {i}. {customer} — {weight} kg\n"
             if len(stops) > 5:
@@ -115,27 +126,31 @@ def send_driver_notification(route: dict, driver_line_user_id: str) -> dict:
     try:
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+            "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
         }
         payload = {
             "to": driver_line_user_id,
-            "messages": [
-                {
-                    "type": "text",
-                    "text": message
-                }
-            ]
+            "messages": [{"type": "text", "text": message}],
         }
 
-        response = requests.post(LINE_API_URL, json=payload, headers=headers, timeout=10)
+        response = requests.post(
+            LINE_API_URL, json=payload, headers=headers, timeout=10
+        )
 
         if response.status_code == 200:
-            logger.info(f"ส่ง LINE notification ไปยังคนขับสำเร็จ: {driver_line_user_id[:4]}****")
+            logger.info(
+                f"ส่ง LINE notification ไปยังคนขับสำเร็จ: {driver_line_user_id[:4]}****"
+            )
             return {"status": "sent", "message": "ส่ง notification สำเร็จ"}
         else:
             error_msg = response.text
-            logger.error(f"ส่ง LINE notification ไปยังคนขับไม่สำเร็จ: {response.status_code} - {error_msg}")
-            return {"status": "error", "message": f"ไม่สามารถส่ง notification: {error_msg}"}
+            logger.error(
+                f"ส่ง LINE notification ไปยังคนขับไม่สำเร็จ: {response.status_code} - {error_msg}"
+            )
+            return {
+                "status": "error",
+                "message": f"ไม่สามารถส่ง notification: {error_msg}",
+            }
 
     except Exception as e:
         logger.error(f"LINE notification error: {e}")
@@ -151,7 +166,7 @@ def _build_single_route_message(route: dict) -> str:
     capacity = route.get("capacity", 0)
     maps_link = route.get("google_maps_link", "")
 
-    message = f"📋 ใบสั่งงานจัดส่งสินค้า\n"
+    message = "📋 ใบสั่งงานจัดส่งสินค้า\n"
     message += "=" * 20 + "\n\n"
 
     if plate:

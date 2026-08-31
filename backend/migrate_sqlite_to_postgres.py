@@ -4,20 +4,31 @@ Script สำหรับย้ายข้อมูลจาก SQLite ไป P
 ใช้: python migrate_sqlite_to_postgres.py
 """
 
-import sqlite3
 import os
+import sqlite3
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # เพิ่ม path ของโปรเจกต์
 sys.path.insert(0, os.path.dirname(__file__))
 
-from database.models import Base, Order, OrderItem, Vehicle, RoutePlan, RouteDetail, CustomerLocation
+from database.models import (
+    Base,
+    CustomerLocation,
+    Order,
+    OrderItem,
+    RouteDetail,
+    RoutePlan,
+    Vehicle,
+)
 
 SQLITE_PATH = os.path.join(os.path.dirname(__file__), "data", "logistics.db")
-POSTGRES_URL = os.getenv("DATABASE_URL", "postgresql://logistics:logistics@db:5432/logistics")
+POSTGRES_URL = os.getenv(
+    "DATABASE_URL", "postgresql://logistics:logistics@db:5432/logistics"
+)
 
 
 def migrate():
@@ -65,10 +76,14 @@ def migrate():
                 geocode_provider=row["geocode_provider"],
                 is_verified=bool(row["is_verified"]),
                 verified_by=row["verified_by"],
-                verified_at=datetime.fromisoformat(row["verified_at"]) if row["verified_at"] else None,
+                verified_at=datetime.fromisoformat(row["verified_at"])
+                if row["verified_at"]
+                else None,
                 zone=row["zone"],
                 products_json=row["products_json"],
-                created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.utcnow()
+                created_at=datetime.fromisoformat(row["created_at"])
+                if row["created_at"]
+                else datetime.now(UTC),
             )
             pg_session.add(order)
             pg_session.flush()
@@ -91,7 +106,7 @@ def migrate():
                     quantity=row["quantity"],
                     unit=row["unit"],
                     price=row["price"],
-                    total=row["total"]
+                    total=row["total"],
                 )
                 pg_session.add(item)
 
@@ -112,7 +127,7 @@ def migrate():
                 max_volume_cbm=row["max_volume_cbm"],
                 max_boxes=row["max_boxes"],
                 max_stops=row["max_stops"],
-                active=bool(row["active"])
+                active=bool(row["active"]),
             )
             pg_session.add(vehicle)
 
@@ -126,11 +141,15 @@ def migrate():
 
         for row in plans:
             plan = RoutePlan(
-                plan_date=datetime.fromisoformat(row["plan_date"]) if row["plan_date"] else datetime.utcnow(),
+                plan_date=datetime.fromisoformat(row["plan_date"])
+                if row["plan_date"]
+                else datetime.now(UTC),
                 total_orders=row["total_orders"],
                 total_vehicles=row["total_vehicles"],
                 depot_address=row["depot_address"],
-                created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.utcnow()
+                created_at=datetime.fromisoformat(row["created_at"])
+                if row["created_at"]
+                else datetime.now(UTC),
             )
             pg_session.add(plan)
             pg_session.flush()
@@ -153,7 +172,7 @@ def migrate():
                     driver=row["driver"],
                     total_weight=row["total_weight"],
                     google_maps_link=row["google_maps_link"],
-                    stops_json=row["stops_json"]
+                    stops_json=row["stops_json"],
                 )
                 pg_session.add(detail)
 
@@ -172,7 +191,9 @@ def migrate():
                 lng=row["lng"],
                 formatted_address=row["formatted_address"],
                 confidence_score=row["confidence_score"],
-                updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.utcnow()
+                updated_at=datetime.fromisoformat(row["updated_at"])
+                if row["updated_at"]
+                else datetime.now(UTC),
             )
             pg_session.add(location)
 

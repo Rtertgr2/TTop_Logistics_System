@@ -12,7 +12,10 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 LINE_DEFAULT_USER_ID = os.getenv("LINE_DEFAULT_USER_ID", "")
 
 # Depot (คลังสินค้า / ต้นทาง)
-DEPOT_ADDRESS = os.getenv("DEPOT_ADDRESS", "บริษัท ทรีท็อปเคมิคัลแอนด์ฟู้ดส์ คอร์ปอเรชั่น จำกัด 20/2 ถนนบรมราชชนนี แขวงฉิมพลี เขตตลิ่งชัน กรุงเทพมหานคร 10170")
+DEPOT_ADDRESS = os.getenv(
+    "DEPOT_ADDRESS",
+    "บริษัท ทรีท็อปเคมิคัลแอนด์ฟู้ดส์ คอร์ปอเรชั่น จำกัด 20/2 ถนนบรมราชชนนี แขวงฉิมพลี เขตตลิ่งชัน กรุงเทพมหานคร 10170",
+)
 DEPOT_LAT = float(os.getenv("DEPOT_LAT", "13.781882"))
 DEPOT_LNG = float(os.getenv("DEPOT_LNG", "100.425041"))
 
@@ -27,7 +30,13 @@ BACKUP_DIR = os.path.join(os.path.dirname(__file__), "data", "op_backups")
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "data", "templates")
 
 # CORS
-ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",") if o.strip()]
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    ).split(",")
+    if o.strip()
+]
 
 # Business timezone — ใช้สำหรับคำนวณ "วันนี้" (ป้องกันข้อมูลหายตอนเที่ยงคืน UTC vs เวลาไทย)
 BUSINESS_TIMEZONE = os.getenv("BUSINESS_TIMEZONE", "Asia/Bangkok")
@@ -48,13 +57,19 @@ PRIORITY_STOP_COST_WEIGHT = max(int(os.getenv("PRIORITY_STOP_COST_WEIGHT", "100"
 
 # GPS arrival detection
 AUTO_ARRIVAL_RADIUS_M = max(float(os.getenv("AUTO_ARRIVAL_RADIUS_M", "100")), 1.0)
-AUTO_ARRIVAL_MAX_ACCURACY_M = max(float(os.getenv("AUTO_ARRIVAL_MAX_ACCURACY_M", "100")), 1.0)
+AUTO_ARRIVAL_MAX_ACCURACY_M = max(
+    float(os.getenv("AUTO_ARRIVAL_MAX_ACCURACY_M", "100")), 1.0
+)
 
 # Google Roads API (disabled by default because it is billable)
 SNAP_TO_ROAD_ENABLED = os.getenv("SNAP_TO_ROAD_ENABLED", "false").lower() == "true"
-SNAP_TO_ROAD_MAX_DISTANCE_M = max(float(os.getenv("SNAP_TO_ROAD_MAX_DISTANCE_M", "1000")), 1.0)
+SNAP_TO_ROAD_MAX_DISTANCE_M = max(
+    float(os.getenv("SNAP_TO_ROAD_MAX_DISTANCE_M", "1000")), 1.0
+)
 SNAP_TO_ROAD_MAX_POINTS = max(int(os.getenv("SNAP_TO_ROAD_MAX_POINTS", "100")), 1)
-SNAP_TO_ROAD_TIMEOUT_SECONDS = max(float(os.getenv("SNAP_TO_ROAD_TIMEOUT_SECONDS", "3")), 0.5)
+SNAP_TO_ROAD_TIMEOUT_SECONDS = max(
+    float(os.getenv("SNAP_TO_ROAD_TIMEOUT_SECONDS", "3")), 0.5
+)
 
 # Redis Cache Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

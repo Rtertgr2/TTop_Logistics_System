@@ -8,7 +8,8 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from celery import shared_task
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ def _get_redis():
     if _redis_client is None:
         try:
             import redis
+
             url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
             _redis_client = redis.from_url(url, decode_responses=True)
             _redis_client.ping()
@@ -71,8 +73,9 @@ def _update_task(task_id: str, **kwargs):
 
 # ── Tasks ────────────────────────────────────────────────────────
 
+
 @shared_task(bind=True, name="tasks.optimize_routes_task")
-def optimize_routes_task(self, orders: list, depot: dict, task_id: str = None):
+def optimize_routes_task(self, orders: list, depot: dict, task_id: str | None = None):
     """
     Background VRP optimization task.
     Called asynchronously via POST /api/v1/plan-routes/async
@@ -80,14 +83,14 @@ def optimize_routes_task(self, orders: list, depot: dict, task_id: str = None):
     if not task_id:
         task_id = str(uuid.uuid4())
 
-    _update_task(task_id, status="processing", started_at=datetime.now(timezone.utc).isoformat())
+    _update_task(task_id, status="processing", started_at=datetime.now(UTC).isoformat())
     logger.info(f"Task {task_id}: Starting VRP optimization for {len(orders)} orders")
 
     try:
-        from services.geocoding import geocode_orders
-        from services.route_optimizer import optimize_routes, load_vehicles
         from database.db import save_route_plan
         from metrics import record_route_planned
+        from services.geocoding import geocode_orders
+        from services.route_optimizer import load_vehicles, optimize_routes
 
         start_time = time.time()
 
@@ -111,7 +114,9 @@ def optimize_routes_task(self, orders: list, depot: dict, task_id: str = None):
         duration = time.time() - start_time
         record_route_planned()
 
-        logger.info(f"Task {task_id}: VRP optimization completed in {duration:.1f}s, plan_id={plan_id}")
+        logger.info(
+            f"Task {task_id}: VRP optimization completed in {duration:.1f}s, plan_id={plan_id}"
+        )
 
         final_result = {
             "plan_id": plan_id,
@@ -129,14 +134,14 @@ def optimize_routes_task(self, orders: list, depot: dict, task_id: str = None):
             task_id,
             status="completed",
             result=final_result,
-            completed_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=datetime.now(UTC).isoformat(),
             duration_seconds=round(duration, 2),
         )
 
         return final_result
 
     except Exception as e:
-        logger.error(f"Task {task_id}: VRP optimization failed: {e}", exc_info=True)
+        logger.exception(f"Task {task_id}: VRP optimization failed")
         # Set "retrying" before retry, not "failed"
         retries = self.request.retries
         if retries < self.max_retries:
@@ -145,7 +150,7 @@ def optimize_routes_task(self, orders: list, depot: dict, task_id: str = None):
                 status="retrying",
                 error=str(e),
                 retry_count=retries + 1,
-                next_retry_at=datetime.now(timezone.utc).isoformat(),
+                next_retry_at=datetime.now(UTC).isoformat(),
             )
             raise self.retry(exc=e, countdown=60)
         else:
@@ -153,20 +158,20 @@ def optimize_routes_task(self, orders: list, depot: dict, task_id: str = None):
                 task_id,
                 status="failed",
                 error=str(e),
-                completed_at=datetime.now(timezone.utc).isoformat(),
+                completed_at=datetime.now(UTC).isoformat(),
             )
             raise
 
 
 @shared_task(bind=True, name="tasks.geocode_orders_task")
-def geocode_orders_task(self, orders: list, task_id: str = None):
+def geocode_orders_task(self, orders: list, task_id: str | None = None):
     """
     Background geocoding task for batch processing.
     """
     if not task_id:
         task_id = str(uuid.uuid4())
 
-    _update_task(task_id, status="processing", started_at=datetime.now(timezone.utc).isoformat())
+    _update_task(task_id, status="processing", started_at=datetime.now(UTC).isoformat())
     logger.info(f"Task {task_id}: Starting batch geocoding for {len(orders)} orders")
 
     try:
@@ -187,13 +192,13 @@ def geocode_orders_task(self, orders: list, task_id: str = None):
             task_id,
             status="completed",
             result=result,
-            completed_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=datetime.now(UTC).isoformat(),
         )
 
         return result
 
     except Exception as e:
-        logger.error(f"Task {task_id}: Geocoding failed: {e}", exc_info=True)
+        logger.exception(f"Task {task_id}: Geocoding failed")
         retries = self.request.retries
         if retries < self.max_retries:
             _update_task(
@@ -208,6 +213,6 @@ def geocode_orders_task(self, orders: list, task_id: str = None):
                 task_id,
                 status="failed",
                 error=str(e),
-                completed_at=datetime.now(timezone.utc).isoformat(),
+                completed_at=datetime.now(UTC).isoformat(),
             )
             raise

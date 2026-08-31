@@ -17,12 +17,15 @@ import sys
 
 def _init_db():
     from database.db import init_db
+
     init_db()
 
 
 def cmd_create(args):
     from fastapi import HTTPException
+
     from auth import create_user
+
     password = getpass.getpass("Password: ")
     if not password:
         print("❌ Password cannot be empty")
@@ -33,11 +36,18 @@ def cmd_create(args):
         sys.exit(1)
     try:
         user = create_user(
-            args.username, password, role=args.role, name=args.name,
-            email=args.email, phone=args.phone,
-            department=args.department, position=args.position,
+            args.username,
+            password,
+            role=args.role,
+            name=args.name,
+            email=args.email,
+            phone=args.phone,
+            department=args.department,
+            position=args.position,
         )
-        print(f"✅ สร้างผู้ใช้สำเร็จ: {user['username']} (role={user['role']}, name={user['name']})")
+        print(
+            f"✅ สร้างผู้ใช้สำเร็จ: {user['username']} (role={user['role']}, name={user['name']})"
+        )
     except HTTPException as e:
         print(f"❌ {e.detail}")
         sys.exit(1)
@@ -45,6 +55,7 @@ def cmd_create(args):
 
 def cmd_list(_args):
     from auth import list_users_from_db
+
     users = list_users_from_db()
     if not users:
         print("ไม่มีผู้ใช้ในฐานข้อมูล")
@@ -56,8 +67,9 @@ def cmd_list(_args):
 
 
 def cmd_set_active(args, active: bool):
-    from database.models import User as UserModel
     from database.db import SessionLocal
+    from database.models import User as UserModel
+
     db = SessionLocal()
     try:
         row = db.query(UserModel).filter(UserModel.username == args.username).first()
@@ -86,7 +98,9 @@ def main():
 
     p_create = sub.add_parser("create", help="สร้างผู้ใช้ใหม่")
     p_create.add_argument("--username", required=True)
-    p_create.add_argument("--role", default="user", choices=["admin", "dispatcher", "driver", "user"])
+    p_create.add_argument(
+        "--role", default="user", choices=["admin", "dispatcher", "driver", "user"]
+    )
     p_create.add_argument("--name", default="")
     p_create.add_argument("--email", default="")
     p_create.add_argument("--phone", default="")

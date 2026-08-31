@@ -5,13 +5,13 @@ import math
 from collections.abc import Iterable
 
 import requests
+
 from config import (
     SNAP_TO_ROAD_ENABLED,
     SNAP_TO_ROAD_MAX_DISTANCE_M,
     SNAP_TO_ROAD_MAX_POINTS,
     SNAP_TO_ROAD_TIMEOUT_SECONDS,
 )
-
 from services.cache import get_cached, set_cached
 from services.geo_utils import haversine_km
 from services.geocoding import get_google_maps_api_key, is_in_thailand

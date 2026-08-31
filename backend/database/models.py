@@ -1,13 +1,24 @@
-from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, DateTime, Boolean, Index
+from datetime import UTC, datetime
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from datetime import datetime, timezone
 
 Base = declarative_base()
 
 
 def _utcnow():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class User(Base):
@@ -46,7 +57,9 @@ class User(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "consent_given": bool(self.consent_given),
-            "consent_date": self.consent_date.isoformat() if self.consent_date else None,
+            "consent_date": self.consent_date.isoformat()
+            if self.consent_date
+            else None,
             "privacy_policy_version": self.privacy_policy_version or "",
         }
 
@@ -57,7 +70,9 @@ class AuditLog(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, nullable=False)
     username = Column(String(100), nullable=False)
-    action = Column(String(50), nullable=False)  # create, update, deactivate, activate, change_password, login_failed
+    action = Column(
+        String(50), nullable=False
+    )  # create, update, deactivate, activate, change_password, login_failed
     target_user = Column(String(100), default="")
     details = Column(Text, default="")
     timestamp = Column(DateTime, default=_utcnow)
@@ -66,9 +81,9 @@ class AuditLog(Base):
 class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (
-        Index('ix_orders_created_at', 'created_at'),
-        Index('ix_orders_customer', 'customer'),
-        Index('ix_orders_order_number', 'order_number'),
+        Index("ix_orders_created_at", "created_at"),
+        Index("ix_orders_customer", "customer"),
+        Index("ix_orders_order_number", "order_number"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -84,7 +99,7 @@ class Order(Base):
     verified_lat = Column(Float)
     verified_lng = Column(Float)
     confidence_score = Column(Float, default=0)
-    geocode_provider = Column(String(100), default='none')
+    geocode_provider = Column(String(100), default="none")
     is_verified = Column(Boolean, default=False)
     verified_by = Column(String(100))
     verified_at = Column(DateTime)
@@ -92,24 +107,28 @@ class Order(Base):
     products_json = Column(Text)
     # Time Window fields (Sprint 2.1)
     time_window_start = Column(String(10))  # "08:00"
-    time_window_end = Column(String(10))    # "17:00"
-    time_window_source = Column(String(20), default='none')  # "pdf", "manual", "none"
+    time_window_end = Column(String(10))  # "17:00"
+    time_window_source = Column(String(20), default="none")  # "pdf", "manual", "none"
     delivery_date = Column(String(10))  # "2026-08-15"
-    booking_status = Column(String(50), default='pending')  # pending, booked, delivered
+    booking_status = Column(String(50), default="pending")  # pending, booked, delivered
     created_at = Column(DateTime, default=_utcnow)
 
-    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+    items = relationship(
+        "OrderItem", back_populates="order", cascade="all, delete-orphan"
+    )
 
 
 class OrderItem(Base):
     __tablename__ = "order_items"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+    order_id = Column(
+        Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False
+    )
     product_code = Column(String(100))
     product_name = Column(String(500))
     quantity = Column(Float, default=0)
-    unit = Column(String(50), default='ชิ้น')
+    unit = Column(String(50), default="ชิ้น")
     price = Column(Float, default=0)
     total = Column(Float, default=0)
     item_weight = Column(Float, default=0)  # น้ำหนักรวม = จำนวน × น้ำหนักต่อหน่วย
@@ -152,17 +171,19 @@ class RoutePlan(Base):
     depot_address = Column(Text)
     created_at = Column(DateTime, default=_utcnow)
 
-    details = relationship("RouteDetail", back_populates="plan", cascade="all, delete-orphan")
+    details = relationship(
+        "RouteDetail", back_populates="plan", cascade="all, delete-orphan"
+    )
 
 
 class RouteDetail(Base):
     __tablename__ = "route_details"
-    __table_args__ = (
-        Index('ix_route_details_plan_id', 'plan_id'),
-    )
+    __table_args__ = (Index("ix_route_details_plan_id", "plan_id"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    plan_id = Column(Integer, ForeignKey("route_plans.id", ondelete="CASCADE"), nullable=False)
+    plan_id = Column(
+        Integer, ForeignKey("route_plans.id", ondelete="CASCADE"), nullable=False
+    )
     vehicle_id = Column(Integer, nullable=False)
     plate = Column(String(100))
     driver = Column(String(200))
@@ -204,7 +225,12 @@ class VehicleLoad(Base):
     __tablename__ = "vehicle_loads"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="CASCADE"), nullable=False, unique=True)
+    vehicle_id = Column(
+        Integer,
+        ForeignKey("vehicles.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
     current_weight = Column(Float, default=0)
     current_volume = Column(Float, default=0)
     current_boxes = Column(Integer, default=0)
@@ -221,7 +247,9 @@ class StopStatusHistory(Base):
     stop_id = Column(Integer, nullable=False)
     route_id = Column(Integer, ForeignKey("route_details.id", ondelete="CASCADE"))
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="SET NULL"))
-    status = Column(String(50), nullable=False)  # PENDING, IN_TRANSIT, ARRIVED, DELIVERED, FAILED, PARTIAL, RESCHEDULED
+    status = Column(
+        String(50), nullable=False
+    )  # PENDING, IN_TRANSIT, ARRIVED, DELIVERED, FAILED, PARTIAL, RESCHEDULED
     timestamp = Column(DateTime, default=_utcnow)
     updated_by = Column(String(100))
     note = Column(Text)
@@ -235,7 +263,9 @@ class ItemDelivery(Base):
     order_item_id = Column(Integer, ForeignKey("order_items.id", ondelete="CASCADE"))
     ordered_qty = Column(Float, default=0)
     delivered_qty = Column(Float, default=0)
-    status = Column(String(50), default='pending')  # pending, delivered, partial, failed
+    status = Column(
+        String(50), default="pending"
+    )  # pending, delivered, partial, failed
     note = Column(Text)
     created_at = Column(DateTime, default=_utcnow)
 
@@ -260,7 +290,9 @@ class VehicleLocation(Base):
     __tablename__ = "vehicle_locations"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="CASCADE"), nullable=False)
+    vehicle_id = Column(
+        Integer, ForeignKey("vehicles.id", ondelete="CASCADE"), nullable=False
+    )
     lat = Column(Float, nullable=False)
     lng = Column(Float, nullable=False)
     speed_kmh = Column(Float, default=0)

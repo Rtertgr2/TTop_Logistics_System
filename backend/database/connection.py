@@ -1,14 +1,14 @@
 """Database connection, engine, session, and initialization."""
 
+import logging
 import os
 import sys
-import logging
 import time
-from datetime import datetime, timezone
-from sqlalchemy import create_engine, text, DDL
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import OperationalError
+from datetime import UTC, datetime
+
 from dotenv import load_dotenv
+from sqlalchemy import DDL, create_engine, text
+from sqlalchemy.orm import sessionmaker
 
 try:
     from zoneinfo import ZoneInfo
@@ -43,8 +43,10 @@ def _business_today() -> tuple:
         try:
             return datetime.now(ZoneInfo(tz_name)).date(), tz_name
         except Exception:
-            logger.warning(f"Invalid BUSINESS_TIMEZONE={tz_name!r}, falling back to UTC")
-    return datetime.now(timezone.utc).date(), "UTC"
+            logger.warning(
+                f"Invalid BUSINESS_TIMEZONE={tz_name!r}, falling back to UTC"
+            )
+    return datetime.now(UTC).date(), "UTC"
 
 
 engine_kwargs = {"pool_pre_ping": True}
@@ -61,10 +63,11 @@ def _record_db_metric(operation: str, table: str, start_time: float, success: bo
     """Record DB operation metrics (safe import)"""
     try:
         from metrics import record_db_operation
+
         duration = time.time() - start_time
         record_db_operation(operation, table, duration, success)
     except Exception:
-        pass
+        logger.warning("Failed to record DB metric")
 
 
 def get_db():
@@ -96,7 +99,7 @@ def get_db_status() -> dict:
         return {
             "status": "connected",
             "database": "postgresql",
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(UTC).isoformat(),
         }
     except Exception as e:
         error_msg = "Database connection failed" if PRODUCTION_MODE else str(e)
@@ -104,7 +107,7 @@ def get_db_status() -> dict:
             "status": "disconnected",
             "database": "postgresql",
             "error": error_msg,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
 
@@ -119,7 +122,9 @@ def init_db():
 
     _migrate_columns()
 
-    logger.info("Database tables ready (vehicles ไม่ถูก seed — เริ่มต้นว่าง รอ admin กรอกผ่าน UI)")
+    logger.info(
+        "Database tables ready (vehicles ไม่ถูก seed — เริ่มต้นว่าง รอ admin กรอกผ่าน UI)"
+    )
 
 
 def _migrate_columns():
@@ -147,6 +152,7 @@ def _migrate_columns():
             try:
                 existing = {c["name"] for c in inspector.get_columns(table)}
             except Exception:
+                logger.warning(f"Failed to inspect table {table}")
                 continue
             if column in existing:
                 continue
@@ -157,7 +163,8 @@ def _migrate_columns():
 
         # สร้างตาราง audit_logs หากยังไม่มี
         try:
-            db.execute(text("""
+            db.execute(
+                text("""
                 CREATE TABLE IF NOT EXISTS audit_logs (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL,
@@ -167,14 +174,15 @@ def _migrate_columns():
                     details TEXT DEFAULT '',
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """))
+            """)
+            )
             db.commit()
             logger.info("Migration: สร้างตาราง audit_logs เรียบร้อย")
         except Exception as e:
             db.rollback()
             logger.warning(f"audit_logs migration skipped: {e}")
-    except Exception as e:
+    except Exception:
         db.rollback()
-        logger.error(f"Migration error: {e}", exc_info=True)
+        logger.exception("Migration error")
     finally:
         db.close()

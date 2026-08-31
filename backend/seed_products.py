@@ -19,6 +19,7 @@ DEFAULT_CSV = os.path.join(os.path.dirname(__file__), "data", "products_weight.c
 
 def _init_db():
     from database.db import init_db
+
     init_db()
 
 

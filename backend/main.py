@@ -1,22 +1,25 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+
 from api.routes import router
-from services.line_webhook import router as line_webhook_router
+from auth import _key_in_list
 from config import ALLOWED_ORIGINS, APP_VERSION
-from database.db import init_db, check_db_connection, get_db_status
+from database.db import get_db_status, init_db
 from logging_config import setup_logging
-from metrics import metrics_middleware, metrics_endpoint
+from metrics import metrics_endpoint, metrics_middleware
 from middleware.security import (
-    RateLimitMiddleware,
     AuditLogMiddleware,
-    SecurityHeadersMiddleware,
     CSRFMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
 )
+from services.line_webhook import router as line_webhook_router
 
 # ── Logging Setup ────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -27,10 +30,12 @@ logger = logging.getLogger(__name__)
 
 # ── API Key Middleware ───────────────────────────────────────────
 
+
 class APIKeyMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)
-        from auth import API_KEYS, _key_in_list
+        from auth import API_KEYS
+
         self.api_keys = API_KEYS
 
     async def dispatch(self, request: Request, call_next):
@@ -39,7 +44,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Skip auth endpoints (both legacy /api/auth/ and versioned /api/v1/auth/)
-        if request.url.path.startswith("/api/auth/") or request.url.path.startswith("/api/v1/auth/"):
+        if request.url.path.startswith("/api/auth/") or request.url.path.startswith(
+            "/api/v1/auth/"
+        ):
             return await call_next(request)
 
         # Skip public PDPA transparency endpoint (no auth required by design)
@@ -59,8 +66,10 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 # อนุญาตผู้ใช้ที่ login ด้วย JWT (Authorization: Bearer) ให้ผ่านได้
                 auth_header = request.headers.get("Authorization", "")
                 if auth_header.startswith("Bearer "):
-                    from auth import verify_jwt_token
                     from fastapi import HTTPException as _HTTPExc
+
+                    from auth import verify_jwt_token
+
                     try:
                         verify_jwt_token(auth_header[7:])
                         return await call_next(request)
@@ -69,13 +78,14 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 return Response(
                     content='{"detail": "Invalid or missing API Key"}',
                     status_code=401,
-                    media_type="application/json"
+                    media_type="application/json",
                 )
 
         return await call_next(request)
 
 
 # ── Lifespan ────────────────────────────────────────────────────
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -131,7 +141,11 @@ async def redirect_legacy_api(request: Request, call_next):
     # Skip redirect for LINE webhook (needs exact path match)
     if path == "/api/line/webhook":
         return await call_next(request)
-    if path.startswith("/api/") and not path.startswith("/api/v1/") and not path.startswith("/api/auth/"):
+    if (
+        path.startswith("/api/")
+        and not path.startswith("/api/v1/")
+        and not path.startswith("/api/auth/")
+    ):
         new_path = path.replace("/api/", "/api/v1/", 1)
         return RedirectResponse(url=new_path, status_code=307)
     return await call_next(request)
@@ -156,7 +170,7 @@ def health_check():
         "status": "healthy" if is_healthy else "unhealthy",
         "database": db_status,
         "version": APP_VERSION,
-        "timestamp": db_status["timestamp"]
+        "timestamp": db_status["timestamp"],
     }
 
     if not is_healthy:
@@ -166,7 +180,7 @@ def health_check():
 
 
 @app.get("/metrics")
-async def metrics():
+async def metrics_endpoint_handler():
     """Prometheus metrics endpoint"""
     return await metrics_endpoint()
 

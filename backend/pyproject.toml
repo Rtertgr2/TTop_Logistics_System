@@ -30,3 +30,14 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["auth", "config", "services", "database", "api", "middleware"]
 omit = ["tests/*", "*/__init__.py"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = [
+    "EXE002",   # exFAT ไม่รองรับ chmod -x
+    "B008",     # FastAPI Depends() in defaults เป็น pattern ที่ถูกต้อง
+    "BLE001",   # blind except Exception - แก้ทีหลัง
+]
+per-file-ignores = {}
