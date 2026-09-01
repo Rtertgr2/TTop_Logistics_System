@@ -36,6 +36,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 ignore = [
+    "EXE001",   # exFAT ไม่รองรับ chmod +x (shebang ไม่จำเป็นต้อง executable)
     "EXE002",   # exFAT ไม่รองรับ chmod -x
     "B008",     # FastAPI Depends() in defaults เป็น pattern ที่ถูกต้อง
     "BLE001",   # blind except Exception - แก้ทีหลัง
